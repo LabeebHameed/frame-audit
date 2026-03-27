@@ -1,6 +1,6 @@
 import { framer, isFrameNode } from "framer-plugin"
 import type { CanvasNode, FrameNode } from "framer-plugin"
-import type { AuditReport, CheckCategory, CheckItem, CheckResult, CheckStatus, ScoreLabel } from "../types"
+import type { AuditReport, CheckCategory, CheckItem, CheckResult, CheckStatus, PaddingCheckItem, PaddingReport, PaddingSection, PaddingSectionResult, ScoreLabel } from "../types"
 
 // ---------------------------------------------------------------------------
 // Internal types — Framer runtime shapes not fully typed in the package
@@ -1131,6 +1131,76 @@ async function runAudit(onProgress?: (done: number, total: number) => void): Pro
         failed: scoreResult.failed,
         runAt: Date.now(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Padding & Gap checker
+// ---------------------------------------------------------------------------
+
+export async function checkPaddingAndGap(sections: ReadonlyArray<PaddingSection>): Promise<PaddingReport> {
+    const allFrames = await framer.getNodesWithType("FrameNode")
+
+    const sectionOutputs = await Promise.all(
+        sections.map(async (section, sectionIndex) => {
+            const items: PaddingCheckItem[] = []
+
+            for (const frameRef of section.frames) {
+                const node = allFrames.find(n => n.id === frameRef.id)
+                if (!node) continue
+
+                if (section.gap.enabled && section.gap.value !== "") {
+                    const actual = ((node as unknown) as Record<string, unknown>)["gap"]
+                    const actualNum = typeof actual === "number" ? actual : 0
+                    if (Number(section.gap.value) !== actualNum) {
+                        items.push({
+                            nodeId: node.id,
+                            nodeName: node.name,
+                            property: "gap",
+                            expected: section.gap.value,
+                            actual: String(actualNum),
+                        })
+                    }
+                }
+
+                if (section.padding.enabled) {
+                    const sides: Array<{ key: keyof typeof node; prop: string; expected: string }> =
+                        section.padding.mode === "uniform"
+                            ? [
+                                  { key: "paddingTop" as keyof typeof node, prop: "paddingTop", expected: section.padding.uniform },
+                                  { key: "paddingRight" as keyof typeof node, prop: "paddingRight", expected: section.padding.uniform },
+                                  { key: "paddingBottom" as keyof typeof node, prop: "paddingBottom", expected: section.padding.uniform },
+                                  { key: "paddingLeft" as keyof typeof node, prop: "paddingLeft", expected: section.padding.uniform },
+                              ]
+                            : [
+                                  { key: "paddingTop" as keyof typeof node, prop: "paddingTop", expected: section.padding.top },
+                                  { key: "paddingRight" as keyof typeof node, prop: "paddingRight", expected: section.padding.right },
+                                  { key: "paddingBottom" as keyof typeof node, prop: "paddingBottom", expected: section.padding.bottom },
+                                  { key: "paddingLeft" as keyof typeof node, prop: "paddingLeft", expected: section.padding.left },
+                              ]
+
+                    for (const side of sides) {
+                        if (side.expected === "") continue
+                        const actualVal = (node as unknown as Record<string, unknown>)[side.prop]
+                        const actualNum = typeof actualVal === "number" ? actualVal : 0
+                        if (Number(side.expected) !== actualNum) {
+                            items.push({
+                                nodeId: node.id,
+                                nodeName: node.name,
+                                property: side.prop,
+                                expected: side.expected,
+                                actual: String(actualNum),
+                            })
+                        }
+                    }
+                }
+            }
+
+            const result: PaddingSectionResult = { sectionIndex, items }
+            return { section, results: [result] }
+        })
+    )
+
+    return { sections: sectionOutputs }
 }
 
 export { runAudit }
