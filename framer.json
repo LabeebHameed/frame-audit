@@ -1,0 +1,9 @@
+{
+  "id": "fa2e91",
+  "name": "Frame Audit",
+  "modes": [
+    "canvas"
+  ],
+  "icon": "/icon.svg",
+  "permissions": []
+}

@@ -1,0 +1,66 @@
+/* Frame Audit Plugin CSS */
+
+main {
+    display: flex;
+    flex-direction: column;
+    align-items: start;
+    padding: 0 15px 15px 15px;
+    height: 100%;
+    gap: 0;
+}
+
+/* Remove all focus borders and outlines - prevent blue highlights */
+*:focus,
+*:focus-visible,
+*:active {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+button:focus,
+button:focus-visible,
+button:active {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* Audit scrollable area */
+.audit-scroll {
+    overflow-y: auto;
+    flex: 1;
+    width: 100%;
+    /* Thin thumb-only scrollbar, no track — auto-hides when not scrolling */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(128, 128, 128, 0.25) transparent;
+}
+
+.audit-scroll::-webkit-scrollbar {
+    width: 3px;
+    background: transparent;
+}
+
+.audit-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.audit-scroll::-webkit-scrollbar-thumb {
+    background: rgba(128, 128, 128, 0.25);
+    border-radius: 3px;
+    min-height: 24px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+button {
+    transition: opacity 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+    opacity: 0.88;
+}
+
+button:active:not(:disabled) {
+    transform: scale(0.97);
+}
