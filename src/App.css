@@ -24,29 +24,20 @@ button:active {
     box-shadow: none !important;
 }
 
+/* Hide all scrollbars globally — scrolling still works */
+* {
+    scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+    display: none;
+}
+
 /* Audit scrollable area */
 .audit-scroll {
     overflow-y: auto;
     flex: 1;
     width: 100%;
-    /* Thin thumb-only scrollbar, no track — auto-hides when not scrolling */
-    scrollbar-width: thin;
-    scrollbar-color: rgba(128, 128, 128, 0.25) transparent;
-}
-
-.audit-scroll::-webkit-scrollbar {
-    width: 3px;
-    background: transparent;
-}
-
-.audit-scroll::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.audit-scroll::-webkit-scrollbar-thumb {
-    background: rgba(128, 128, 128, 0.25);
-    border-radius: 3px;
-    min-height: 24px;
 }
 
 @keyframes spin {

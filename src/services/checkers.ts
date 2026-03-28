@@ -1137,6 +1137,21 @@ async function runAudit(onProgress?: (done: number, total: number) => void): Pro
 // Padding & Gap checker
 // ---------------------------------------------------------------------------
 
+function parsePx(value: string | null | undefined): number {
+    if (!value) return 0
+    const n = parseFloat(value)
+    return isNaN(n) ? 0 : n
+}
+
+function parsePaddingSides(padding: string | null | undefined): { top: number; right: number; bottom: number; left: number } {
+    if (!padding) return { top: 0, right: 0, bottom: 0, left: 0 }
+    const parts = padding.trim().split(/\s+/).map(parsePx)
+    if (parts.length === 1) return { top: parts[0], right: parts[0], bottom: parts[0], left: parts[0] }
+    if (parts.length === 2) return { top: parts[0], right: parts[1], bottom: parts[0], left: parts[1] }
+    if (parts.length === 4) return { top: parts[0], right: parts[1], bottom: parts[2], left: parts[3] }
+    return { top: 0, right: 0, bottom: 0, left: 0 }
+}
+
 export async function checkPaddingAndGap(sections: ReadonlyArray<PaddingSection>): Promise<PaddingReport> {
     const allFrames = await framer.getNodesWithType("FrameNode")
 
@@ -1149,12 +1164,13 @@ export async function checkPaddingAndGap(sections: ReadonlyArray<PaddingSection>
                 if (!node) continue
 
                 if (section.gap.enabled && section.gap.value !== "") {
-                    const actual = ((node as unknown) as Record<string, unknown>)["gap"]
-                    const actualNum = typeof actual === "number" ? actual : 0
+                    // node.gap is a CSS string like "80px" or "80px 40px"
+                    const gapStr = node.gap ?? null
+                    const actualNum = parsePx(typeof gapStr === "string" ? gapStr.split(" ")[0] : null)
                     if (Number(section.gap.value) !== actualNum) {
                         items.push({
                             nodeId: node.id,
-                            nodeName: node.name,
+                            nodeName: node.name ?? frameRef.name,
                             property: "gap",
                             expected: section.gap.value,
                             actual: String(actualNum),
@@ -1163,32 +1179,29 @@ export async function checkPaddingAndGap(sections: ReadonlyArray<PaddingSection>
                 }
 
                 if (section.padding.enabled) {
-                    const sides: Array<{ key: keyof typeof node; prop: string; expected: string }> =
+                    // node.padding is a CSS shorthand string like "200px 50px 500px 50px"
+                    const sides = parsePaddingSides(node.padding ?? null)
+                    const expected =
                         section.padding.mode === "uniform"
-                            ? [
-                                  { key: "paddingTop" as keyof typeof node, prop: "paddingTop", expected: section.padding.uniform },
-                                  { key: "paddingRight" as keyof typeof node, prop: "paddingRight", expected: section.padding.uniform },
-                                  { key: "paddingBottom" as keyof typeof node, prop: "paddingBottom", expected: section.padding.uniform },
-                                  { key: "paddingLeft" as keyof typeof node, prop: "paddingLeft", expected: section.padding.uniform },
-                              ]
-                            : [
-                                  { key: "paddingTop" as keyof typeof node, prop: "paddingTop", expected: section.padding.top },
-                                  { key: "paddingRight" as keyof typeof node, prop: "paddingRight", expected: section.padding.right },
-                                  { key: "paddingBottom" as keyof typeof node, prop: "paddingBottom", expected: section.padding.bottom },
-                                  { key: "paddingLeft" as keyof typeof node, prop: "paddingLeft", expected: section.padding.left },
-                              ]
+                            ? { top: section.padding.uniform, right: section.padding.uniform, bottom: section.padding.uniform, left: section.padding.uniform }
+                            : { top: section.padding.top, right: section.padding.right, bottom: section.padding.bottom, left: section.padding.left }
 
-                    for (const side of sides) {
+                    const sideEntries: Array<{ prop: string; expected: string; actual: number }> = [
+                        { prop: "paddingTop", expected: expected.top, actual: sides.top },
+                        { prop: "paddingRight", expected: expected.right, actual: sides.right },
+                        { prop: "paddingBottom", expected: expected.bottom, actual: sides.bottom },
+                        { prop: "paddingLeft", expected: expected.left, actual: sides.left },
+                    ]
+
+                    for (const side of sideEntries) {
                         if (side.expected === "") continue
-                        const actualVal = (node as unknown as Record<string, unknown>)[side.prop]
-                        const actualNum = typeof actualVal === "number" ? actualVal : 0
-                        if (Number(side.expected) !== actualNum) {
+                        if (Number(side.expected) !== side.actual) {
                             items.push({
                                 nodeId: node.id,
-                                nodeName: node.name,
+                                nodeName: node.name ?? frameRef.name,
                                 property: side.prop,
                                 expected: side.expected,
-                                actual: String(actualNum),
+                                actual: String(side.actual),
                             })
                         }
                     }

@@ -5,3 +5,4 @@ dist
 .claude/
 *.zip
 FEATURE_SPEC.md
+.grepai/

@@ -1,6 +1,6 @@
 import { framer, isFrameNode } from "framer-plugin"
 import type { CanvasNode } from "framer-plugin"
-import React, { useState, useEffect, useCallback, memo } from "react"
+import React, { useState, useEffect, useCallback, memo, useRef } from "react"
 import { THEME_COLORS, type ThemeMode } from "./theme"
 import type { AuditReport, CheckResult, CheckCategory, CheckItem, PaddingSection, PaddingMode, PaddingReport } from "./types"
 import { runAudit, checkPaddingAndGap } from "./services/checkers"
@@ -615,8 +615,17 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
     const [padR, setPadR] = useState("")
     const [padB, setPadB] = useState("")
     const [padL, setPadL] = useState("")
+    const padRefs = useRef<Array<HTMLInputElement | null>>([null, null, null, null])
     const [results, setResults] = useState<PaddingReport | null>(null)
     const [isChecking, setIsChecking] = useState(false)
+    const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set([0]))
+
+    // Auto-focus first T input when switching to individual mode
+    useEffect(() => {
+        if (paddingMode === "individual") {
+            setTimeout(() => padRefs.current[0]?.focus(), 0)
+        }
+    }, [paddingMode])
 
     const parseNum = (v: string): number => Math.max(0, parseInt(v, 10) || 0)
 
@@ -683,63 +692,129 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         MozAppearance: "textfield" as unknown as undefined,
     }
 
-    // Results view — one row per frame, simple style
+    // Results view — SectionCard + CheckRow design, same as main audit results
     if (results !== null) {
-        const failColor = THEME_COLORS[props.theme].status.fail
-        const passColor = THEME_COLORS[props.theme].status.pass
+        const s = THEME_COLORS[props.theme].status
         return (
-            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, paddingTop: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" as const, color: colors.text.secondary }}>
-                        Results
-                    </span>
-                    <button onClick={handleReset} style={{ background: "none", border: "none", fontSize: 11, color: colors.text.tertiary, cursor: "pointer", padding: 0 }}>
-                        Reset
-                    </button>
-                </div>
+            <>
+            <div style={{ flex: 1, overflowY: "auto", paddingTop: 12, paddingBottom: 60 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" as const, color: colors.text.secondary, display: "block", marginBottom: 8 }}>
+                    Results
+                </span>
                 {results.sections.map((entry, sIdx) => {
-                    const frameMap = new Map<string, { nodeName: string; issues: string[] }>()
+                    const failMap = new Map<string, { nodeName: string; issues: string[] }>()
                     for (const r of entry.results) {
                         for (const item of r.items) {
-                            const existing = frameMap.get(item.nodeId)
+                            const existing = failMap.get(item.nodeId)
                             if (existing) {
                                 existing.issues.push(`${item.property}: ${item.expected}≠${item.actual}`)
                             } else {
-                                frameMap.set(item.nodeId, { nodeName: item.nodeName, issues: [`${item.property}: ${item.expected}≠${item.actual}`] })
+                                failMap.set(item.nodeId, { nodeName: item.nodeName, issues: [`${item.property}: ${item.expected}≠${item.actual}`] })
                             }
                         }
                     }
-                    const frameEntries = Array.from(frameMap.entries())
+                    const failingIds = new Set(failMap.keys())
+                    const passingFrames = entry.section.frames.filter(f => !failingIds.has(f.id))
+                    const isOpen = expandedSections.has(sIdx)
+                    const toggleSection = () => setExpandedSections(prev => {
+                        const next = new Set(prev)
+                        if (next.has(sIdx)) next.delete(sIdx); else next.add(sIdx)
+                        return next
+                    })
                     return (
-                        <div key={entry.section.id}>
-                            {results.sections.length > 1 && (
-                                <span style={{ fontSize: 10, fontWeight: 600, color: colors.text.tertiary, letterSpacing: "0.5px", textTransform: "uppercase" as const, display: "block", marginBottom: 4 }}>
-                                    Section {sIdx + 1}
-                                </span>
-                            )}
-                            {frameEntries.length === 0 && (
-                                <div style={{ padding: "8px 10px", borderRadius: 7, backgroundColor: colors.card.bg, fontSize: 12, color: passColor, marginBottom: 4 }}>
-                                    All frames passed
-                                </div>
-                            )}
-                            {frameEntries.map(([nodeId, { nodeName, issues }]) => (
-                                <div key={nodeId}
-                                    onClick={() => { void framer.navigateTo(nodeId, { select: true, zoomIntoView: true }) }}
-                                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                                        padding: "7px 10px", borderRadius: 7, marginBottom: 4,
-                                        backgroundColor: colors.card.bg, cursor: "pointer" }}>
-                                    <span style={{ fontSize: 12, fontWeight: 500, color: colors.text.primary, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                        {nodeName}
-                                    </span>
-                                    <span style={{ fontSize: 10, color: failColor, flexShrink: 0, marginLeft: 8, whiteSpace: "nowrap" }}>
-                                        {issues.join(" · ")}
+                        <div key={entry.section.id} style={{ marginBottom: 6 }}>
+                            {/* SectionCard-style header */}
+                            <div onClick={toggleSection}
+                                style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                                    padding: "8px 10px", borderRadius: 8,
+                                    backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
+                                    cursor: "pointer", userSelect: "none" as const }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                                    <ChevronIcon open={isOpen} color={colors.text.quaternary} />
+                                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" as const, color: colors.text.secondary }}>
+                                        Section {sIdx + 1}
                                     </span>
                                 </div>
-                            ))}
+                                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                    {failMap.size > 0 && (
+                                        <span style={{ fontSize: 10, fontWeight: 700, color: s.fail, backgroundColor: `${s.fail}18`, borderRadius: 4, padding: "1px 5px" }}>
+                                            {failMap.size}
+                                        </span>
+                                    )}
+                                    {passingFrames.length > 0 && (
+                                        <span style={{ fontSize: 10, fontWeight: 700, color: s.pass, backgroundColor: `${s.pass}18`, borderRadius: 4, padding: "1px 5px" }}>
+                                            {passingFrames.length}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                            {/* CheckRow-style items */}
+                            {isOpen && (
+                                <div style={{ paddingTop: 4 }}>
+                                    {Array.from(failMap.entries()).map(([nodeId, { nodeName, issues }]) => (
+                                        <div key={nodeId}
+                                            onClick={() => { void framer.navigateTo(nodeId, { select: true, zoomIntoView: true }) }}
+                                            style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 6,
+                                                padding: "7px 10px", borderRadius: 7, marginBottom: 2,
+                                                backgroundColor: colors.card.bg,
+                                                border: `1px solid ${s.fail}28`, borderLeft: `3px solid ${s.fail}`,
+                                                cursor: "pointer" }}>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
+                                                <StatusIcon status="fail" theme={props.theme} />
+                                                <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+                                                    <span style={{ fontSize: 12, fontWeight: 500, color: colors.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                        {nodeName}
+                                                    </span>
+                                                    {issues.map((issue, i) => (
+                                                        <span key={i} style={{ fontSize: 10, color: s.fail, lineHeight: 1.4 }}>{issue}</span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.5px", color: s.fail, backgroundColor: `${s.fail}18`, borderRadius: 4, padding: "2px 6px", flexShrink: 0 }}>
+                                                FAIL
+                                            </span>
+                                        </div>
+                                    ))}
+                                    {passingFrames.map(frame => (
+                                        <div key={frame.id}
+                                            onClick={() => { void framer.navigateTo(frame.id, { select: true, zoomIntoView: true }) }}
+                                            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6,
+                                                padding: "7px 10px", borderRadius: 7, marginBottom: 2,
+                                                backgroundColor: "transparent", border: `1px solid ${colors.card.border}`,
+                                                cursor: "pointer" }}>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
+                                                <StatusIcon status="pass" theme={props.theme} />
+                                                <span style={{ fontSize: 12, fontWeight: 400, color: colors.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                    {frame.name}
+                                                </span>
+                                            </div>
+                                            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.5px", color: colors.text.quaternary, flexShrink: 0 }}>
+                                                PASS
+                                            </span>
+                                        </div>
+                                    ))}
+                                    {failMap.size === 0 && passingFrames.length === 0 && (
+                                        <div style={{ padding: "7px 10px", borderRadius: 7, border: `1px solid ${colors.card.border}`, fontSize: 12, color: colors.text.tertiary }}>
+                                            No frames checked
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     )
                 })}
             </div>
+            {/* Fixed footer Reset — same style as AUDIT button */}
+            <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 15px", backgroundColor: colors.bg, borderTop: `1px solid ${colors.divider}`, zIndex: 20 }}>
+                <button onClick={handleReset}
+                    style={{ width: "100%", background: "linear-gradient(177.58deg, #008CFF 2.02%, #0671CA 97.98%)",
+                        color: "#fff", border: "none", borderRadius: 8, padding: "20px 18px",
+                        fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: 6, letterSpacing: "0.3px" }}>
+                    RESET
+                </button>
+            </div>
+            </>
         )
     }
 
@@ -762,9 +837,9 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                         </span>
                         {hoveredFrameIdx === i && (
                             <button onClick={() => setCurrentFrames((prev) => prev.filter((_, j) => j !== i))}
-                                style={{ position: "absolute", top: -5, right: -5, width: 14, height: 14, borderRadius: "50%",
+                                style={{ flexShrink: 0, width: 16, height: 16, borderRadius: "50%",
                                     backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
-                                    display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, zIndex: 2 }}>
+                                    display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, marginLeft: 6 }}>
                                 <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
                                     <path d="M1.5 1.5L5.5 5.5M5.5 1.5L1.5 5.5" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" />
                                 </svg>
@@ -794,9 +869,9 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                         style={{ flex: 1, accentColor: "#008CFF", cursor: "pointer", margin: 0 }} />
                 </div>
 
-                {/* Padding row — single line, inputs swap in-place */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Padding</span>
+                {/* Padding row — single line, inputs inline */}
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0, paddingTop: 7 }}>Padding</span>
                     <button onClick={() => setPaddingMode("uniform")} title="Uniform"
                         style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "uniform" ? "#008CFF" : colors.card.border}`,
                             backgroundColor: paddingMode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
@@ -823,15 +898,27 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                             style={{ ...numInputStyle, flex: 1 }} />
                     )}
                     {paddingMode === "individual" && (
-                        <>
-                            {([["T", padT, setPadT], ["R", padR, setPadR], ["B", padB, setPadB], ["L", padL, setPadL]] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>]>).map(([lbl, val, setter]) => (
-                                <div key={lbl} style={{ flex: 1, position: "relative" }}>
-                                    <span style={{ position: "absolute", top: 2, left: 4, fontSize: 8, lineHeight: 1, color: colors.text.tertiary, pointerEvents: "none", zIndex: 1 }}>{lbl}</span>
-                                    <input type="number" value={val} onChange={(e) => setter(e.target.value)} min={0}
-                                        style={{ ...numInputStyle, width: "100%", paddingTop: 12, paddingBottom: 3, paddingLeft: 4, paddingRight: 4 }} />
+                        <div style={{ flex: 1, display: "flex", gap: 8 }}>
+                            {([["T", padT, setPadT, 0], ["R", padR, setPadR, 1], ["B", padB, setPadB, 2], ["L", padL, setPadL, 3]] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>, number]>).map(([lbl, val, setter, idx]) => (
+                                <div key={lbl} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                                    <input
+                                        ref={el => { padRefs.current[idx] = el }}
+                                        type="number" value={val} onChange={(e) => setter(e.target.value)} min={0}
+                                        onKeyDown={(e) => {
+                                            if (e.key === "Enter" || e.key === " ") {
+                                                e.preventDefault()
+                                                padRefs.current[idx + 1]?.focus()
+                                            } else if (e.key === "Backspace" && val === "") {
+                                                e.preventDefault()
+                                                padRefs.current[idx - 1]?.focus()
+                                            }
+                                        }}
+                                        style={{ ...numInputStyle, width: "100%", height: 28, padding: 0, fontSize: 10 }}
+                                    />
+                                    <span style={{ fontSize: 8, lineHeight: 1, color: colors.text.tertiary }}>{lbl}</span>
                                 </div>
                             ))}
-                        </>
+                        </div>
                     )}
                 </div>
 
@@ -914,32 +1001,31 @@ export function App(): React.ReactElement {
 
     return (
         <main style={{ backgroundColor: colors.bg, color: colors.text.primary, position: "relative" }}>
-            {/* Tab bar — always at very top */}
-            <div style={{ borderBottom: `1px solid ${colors.divider}`, display: "flex" }}>
+            {/* Tab bar — sticky, always on top, content scrolls behind it */}
+            <div style={{ borderBottom: `1px solid ${colors.divider}`, display: "flex", margin: "0 -15px",
+                position: "sticky", top: 0, zIndex: 10, backgroundColor: colors.bg }}>
                 <button onClick={() => setActiveTab("results")}
-                    style={{ flex: 1, background: "none", border: "none",
+                    style={{ flex: 1, background: "none", border: "none", borderRadius: 0,
                         borderBottom: activeTab === "results" ? "2px solid #008CFF" : "2px solid transparent",
                         color: activeTab === "results" ? colors.text.primary : colors.text.secondary,
                         fontWeight: activeTab === "results" ? 700 : 400,
-                        fontSize: 13, padding: "10px 0", cursor: "pointer" }}>
+                        fontSize: 13, padding: "10px 0", cursor: "pointer", marginBottom: -1 }}>
                     Results
                 </button>
                 <button onClick={() => setActiveTab("padding")}
-                    style={{ flex: 1, background: "none", border: "none",
+                    style={{ flex: 1, background: "none", border: "none", borderRadius: 0,
                         borderBottom: activeTab === "padding" ? "2px solid #008CFF" : "2px solid transparent",
                         color: activeTab === "padding" ? colors.text.primary : colors.text.secondary,
                         fontWeight: activeTab === "padding" ? 700 : 400,
-                        fontSize: 13, padding: "10px 0", cursor: "pointer" }}>
+                        fontSize: 13, padding: "10px 0", cursor: "pointer", marginBottom: -1 }}>
                     Padding & Gap
                 </button>
             </div>
 
-            {/* Results tab */}
-            {activeTab === "results" && (
-                <>
-                    <div className="audit-scroll" style={{ paddingBottom: 60 }}>
-                        {/* Score area — inside Results tab */}
-                        <div style={{ padding: "14px 0 10px", borderBottom: `1px solid ${colors.divider}`, marginBottom: 12 }}>
+            {/* Results tab — always mounted, hidden when inactive so state is preserved */}
+            <div style={{ display: activeTab === "results" ? "flex" : "none", flexDirection: "column", flex: 1 }}>
+                        {/* Score area — pinned, never scrolls */}
+                        <div style={{ padding: "14px 0 10px", marginBottom: 12, flexShrink: 0 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                                 <LightningIcon color={scoreColor} size={15} />
                                 <span style={{ fontSize: 22, fontWeight: 700, color: scoreColor, letterSpacing: "-0.5px", lineHeight: 1 }}>
@@ -971,6 +1057,7 @@ export function App(): React.ReactElement {
                             )}
                         </div>
 
+                    <div className="audit-scroll" style={{ paddingBottom: 60 }}>
                         {detailCheck && <DetailView check={detailCheck} theme={theme} onBack={closeDetail} />}
                         {!detailCheck && auditReport && auditReport.categories.map((category: CheckCategory) => (
                             <SectionCard
@@ -1009,11 +1096,12 @@ export function App(): React.ReactElement {
                             {isRunning ? <><SpinnerIcon color="rgba(255,255,255,0.6)" /> Scanning…</> : "AUDIT"}
                         </button>
                     </div>
-                </>
-            )}
+            </div>
 
-            {/* Padding tab */}
-            {activeTab === "padding" && <PaddingPage theme={theme} colors={colors} />}
+            {/* Padding tab — always mounted, hidden when inactive so state is preserved */}
+            <div style={{ display: activeTab === "padding" ? "flex" : "none", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+                <PaddingPage theme={theme} colors={colors} />
+            </div>
         </main>
     )
 }
