@@ -794,46 +794,44 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                         style={{ flex: 1, accentColor: "#008CFF", cursor: "pointer", margin: 0 }} />
                 </div>
 
-                {/* Padding row */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Padding</span>
-                        <button onClick={() => setPaddingMode("uniform")} title="Uniform"
-                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "uniform" ? "#008CFF" : colors.card.border}`,
-                                backgroundColor: paddingMode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
-                                <rect x="4.5" y="4.5" width="5" height="5" rx="0.5" fill={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} opacity="0.6" />
-                            </svg>
-                        </button>
-                        <button onClick={() => setPaddingMode("individual")} title="Individual sides"
-                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "individual" ? "#008CFF" : colors.card.border}`,
-                                backgroundColor: paddingMode === "individual" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
-                                <line x1="2" y1="5" x2="12" y2="5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                                <line x1="2" y1="9" x2="12" y2="9" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                                <line x1="5" y1="2" x2="5" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                                <line x1="9" y1="2" x2="9" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                            </svg>
-                        </button>
-                        {paddingMode === "uniform" && (
-                            <input type="number" value={uniformPad} onChange={(e) => setUniformPad(e.target.value)} min={0}
-                                style={{ ...numInputStyle, flex: 1 }} />
-                        )}
-                    </div>
+                {/* Padding row — single line, inputs swap in-place */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Padding</span>
+                    <button onClick={() => setPaddingMode("uniform")} title="Uniform"
+                        style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "uniform" ? "#008CFF" : colors.card.border}`,
+                            backgroundColor: paddingMode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
+                            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
+                            <rect x="4.5" y="4.5" width="5" height="5" rx="0.5" fill={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} opacity="0.6" />
+                        </svg>
+                    </button>
+                    <button onClick={() => setPaddingMode("individual")} title="Individual sides"
+                        style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "individual" ? "#008CFF" : colors.card.border}`,
+                            backgroundColor: paddingMode === "individual" ? "rgba(0,140,255,0.15)" : colors.card.bg,
+                            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
+                            <line x1="2" y1="5" x2="12" y2="5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                            <line x1="2" y1="9" x2="12" y2="9" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                            <line x1="5" y1="2" x2="5" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                            <line x1="9" y1="2" x2="9" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                        </svg>
+                    </button>
+                    {paddingMode === "uniform" && (
+                        <input type="number" value={uniformPad} onChange={(e) => setUniformPad(e.target.value)} min={0}
+                            style={{ ...numInputStyle, flex: 1 }} />
+                    )}
                     {paddingMode === "individual" && (
-                        <div style={{ display: "flex", gap: 6 }}>
+                        <>
                             {([["T", padT, setPadT], ["R", padR, setPadR], ["B", padB, setPadB], ["L", padL, setPadL]] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>]>).map(([lbl, val, setter]) => (
-                                <div key={lbl} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                                <div key={lbl} style={{ flex: 1, position: "relative" }}>
+                                    <span style={{ position: "absolute", top: 2, left: 4, fontSize: 8, lineHeight: 1, color: colors.text.tertiary, pointerEvents: "none", zIndex: 1 }}>{lbl}</span>
                                     <input type="number" value={val} onChange={(e) => setter(e.target.value)} min={0}
-                                        style={{ ...numInputStyle, width: "100%", padding: "5px 2px" }} />
-                                    <span style={{ fontSize: 10, color: colors.text.tertiary }}>{lbl}</span>
+                                        style={{ ...numInputStyle, width: "100%", paddingTop: 12, paddingBottom: 3, paddingLeft: 4, paddingRight: 4 }} />
                                 </div>
                             ))}
-                        </div>
+                        </>
                     )}
                 </div>
 
