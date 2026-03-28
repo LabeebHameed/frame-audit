@@ -600,48 +600,23 @@ function DetailView(props: {
 
 // --- Padding & Gap Page ---
 
-function CirclePlusToggle(props: { active: boolean; onToggle: () => void }): React.ReactElement {
-    return (
-        <button
-            onClick={props.onToggle}
-            style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}
-        >
-            <svg width="18" height="18" viewBox="0 0 18 18">
-                <circle cx="9" cy="9" r="8" fill={props.active ? "#008CFF" : "none"} stroke={props.active ? "#008CFF" : "currentColor"} strokeWidth="1.5" />
-                <line x1="9" y1="5" x2="9" y2="13" stroke={props.active ? "white" : "currentColor"} strokeWidth="1.5" strokeLinecap="round" />
-                <line x1="5" y1="9" x2="13" y2="9" stroke={props.active ? "white" : "currentColor"} strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-        </button>
-    )
-}
-
 function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark }): React.ReactElement {
     const { colors } = props
 
-    // Sections
     const [sections, setSections] = useState<PaddingSection[]>([])
     const [sectionCount, setSectionCount] = useState(1)
-    // Current section frames
     const [currentFrames, setCurrentFrames] = useState<Array<{ id: string; name: string }>>([])
     const [hoveredFrameIdx, setHoveredFrameIdx] = useState<number | null>(null)
     const [isAddingFrames, setIsAddingFrames] = useState(false)
-    // Gap — starts empty string, NOT "0"
-    const [checkGap, setCheckGap] = useState(false)
     const [gapVal, setGapVal] = useState("")
-    // Padding — starts empty string
-    const [checkPadding, setCheckPadding] = useState(false)
     const [paddingMode, setPaddingMode] = useState<PaddingMode>("uniform")
     const [uniformPad, setUniformPad] = useState("")
     const [padT, setPadT] = useState("")
     const [padR, setPadR] = useState("")
     const [padB, setPadB] = useState("")
     const [padL, setPadL] = useState("")
-    // Results
     const [results, setResults] = useState<PaddingReport | null>(null)
     const [isChecking, setIsChecking] = useState(false)
-    const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
-    const [dismissedItems, setDismissedItems] = useState<Map<string, Set<number>>>(new Map())
-    const [hoveredResultKey, setHoveredResultKey] = useState<string | null>(null)
 
     const parseNum = (v: string): number => Math.max(0, parseInt(v, 10) || 0)
 
@@ -669,14 +644,13 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
     const buildCurrentSection = useCallback((): PaddingSection => ({
         id: `section-${sectionCount}`,
         frames: currentFrames,
-        gap: { enabled: checkGap, value: gapVal },
-        padding: { enabled: checkPadding, mode: paddingMode, uniform: uniformPad, top: padT, right: padR, bottom: padB, left: padL },
-    }), [sectionCount, currentFrames, checkGap, gapVal, checkPadding, paddingMode, uniformPad, padT, padR, padB, padL])
+        gap: { enabled: true, value: gapVal },
+        padding: { enabled: true, mode: paddingMode, uniform: uniformPad, top: padT, right: padR, bottom: padB, left: padL },
+    }), [sectionCount, currentFrames, gapVal, paddingMode, uniformPad, padT, padR, padB, padL])
 
     const resetCurrentSection = useCallback(() => {
         setCurrentFrames([]); setHoveredFrameIdx(null)
-        setCheckGap(false); setGapVal("")
-        setCheckPadding(false); setPaddingMode("uniform")
+        setGapVal(""); setPaddingMode("uniform")
         setUniformPad(""); setPadT(""); setPadR(""); setPadB(""); setPadL("")
     }, [])
 
@@ -692,13 +666,12 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         try {
             const report = await checkPaddingAndGap(allSections)
             setResults(report)
-            setExpandedSections(new Set())
         } catch { /* ignore */ } finally { setIsChecking(false) }
     }, [sections, buildCurrentSection])
 
     const handleReset = useCallback(() => {
         setResults(null); setSections([]); setSectionCount(1)
-        resetCurrentSection(); setExpandedSections(new Set()); setDismissedItems(new Map())
+        resetCurrentSection()
     }, [resetCurrentSection])
 
     const numInputStyle: React.CSSProperties = {
@@ -710,77 +683,59 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         MozAppearance: "textfield" as unknown as undefined,
     }
 
-    // Results view
+    // Results view — one row per frame, simple style
     if (results !== null) {
-        const statusColors = THEME_COLORS[props.theme].status
+        const failColor = THEME_COLORS[props.theme].status.fail
+        const passColor = THEME_COLORS[props.theme].status.pass
         return (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, paddingTop: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.primary }}>Results</span>
-                    <button onClick={handleReset} style={{ background: "none", border: "none", fontSize: 11, color: colors.text.tertiary, cursor: "pointer", padding: 0 }}>Reset</button>
+                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" as const, color: colors.text.secondary }}>
+                        Results
+                    </span>
+                    <button onClick={handleReset} style={{ background: "none", border: "none", fontSize: 11, color: colors.text.tertiary, cursor: "pointer", padding: 0 }}>
+                        Reset
+                    </button>
                 </div>
                 {results.sections.map((entry, sIdx) => {
-                    const sectionKey = entry.section.id
-                    const allItems = entry.results.flatMap((r) => r.items)
-                    const isExp = expandedSections.has(sectionKey)
-                    const dismissed = dismissedItems.get(sectionKey) ?? new Set<number>()
-                    const failCount = allItems.filter((_item, i) => !dismissed.has(i)).length
-                    const passCount = Math.max(0, entry.section.frames.length - failCount)
+                    const frameMap = new Map<string, { nodeName: string; issues: string[] }>()
+                    for (const r of entry.results) {
+                        for (const item of r.items) {
+                            const existing = frameMap.get(item.nodeId)
+                            if (existing) {
+                                existing.issues.push(`${item.property}: ${item.expected}≠${item.actual}`)
+                            } else {
+                                frameMap.set(item.nodeId, { nodeName: item.nodeName, issues: [`${item.property}: ${item.expected}≠${item.actual}`] })
+                            }
+                        }
+                    }
+                    const frameEntries = Array.from(frameMap.entries())
                     return (
-                        <div key={sectionKey} style={{ marginBottom: 4 }}>
-                            <div onClick={() => setExpandedSections((prev) => { const n = new Set(prev); if (n.has(sectionKey)) n.delete(sectionKey); else n.add(sectionKey); return n })}
-                                style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                                    padding: "8px 10px", borderRadius: 8, backgroundColor: colors.card.bg,
-                                    border: `1px solid ${colors.card.border}`, cursor: "pointer", userSelect: "none" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                                    <ChevronIcon open={isExp} color={colors.text.quaternary} />
-                                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", color: colors.text.secondary }}>Section {sIdx + 1}</span>
-                                </div>
-                                <div style={{ display: "flex", gap: 5 }}>
-                                    {failCount > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: statusColors.fail, backgroundColor: `${statusColors.fail}18`, borderRadius: 4, padding: "1px 5px" }}>{failCount}</span>}
-                                    {passCount > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: statusColors.pass, backgroundColor: `${statusColors.pass}18`, borderRadius: 4, padding: "1px 5px" }}>{passCount}</span>}
-                                </div>
-                            </div>
-                            {isExp && (
-                                <div style={{ paddingTop: 4 }}>
-                                    {allItems.map((item, i) => {
-                                        if (dismissed.has(i)) return null
-                                        const hk = `${sectionKey}-${i}`
-                                        const isHov = hoveredResultKey === hk
-                                        const sc = statusColors.fail
-                                        return (
-                                            <div key={i} onMouseEnter={() => setHoveredResultKey(hk)} onMouseLeave={() => setHoveredResultKey(null)}
-                                                onClick={() => { void framer.navigateTo(item.nodeId, { select: true, zoomIntoView: true }) }}
-                                                style={{ position: "relative", display: "flex", alignItems: "center", gap: 7,
-                                                    padding: "7px 10px", borderRadius: 7, marginBottom: 2,
-                                                    backgroundColor: colors.card.bg, border: `1px solid ${sc}28`,
-                                                    borderLeft: `3px solid ${sc}`, cursor: "pointer" }}>
-                                                <FailIcon color={sc} />
-                                                <span style={{ fontSize: 12, fontWeight: 500, color: colors.text.primary, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.nodeName}</span>
-                                                <span style={{ fontSize: 10, fontWeight: 600, color: sc, backgroundColor: `${sc}18`, borderRadius: 4, padding: "2px 5px", flexShrink: 0, whiteSpace: "nowrap" }}>{item.property}: {item.actual} (expected {item.expected})</span>
-                                                {isHov && (
-                                                    <button onClick={(e) => { e.stopPropagation(); setDismissedItems((prev) => { const n = new Map(prev); const s = new Set(n.get(sectionKey) ?? []); s.add(i); n.set(sectionKey, s); return n }) }}
-                                                        style={{ position: "absolute", top: -5, right: -5, width: 14, height: 14, borderRadius: "50%",
-                                                            backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
-                                                            display: "flex", alignItems: "center", justifyContent: "center",
-                                                            cursor: "pointer", padding: 0, zIndex: 2 }}>
-                                                        <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
-                                                            <path d="M1.5 1.5L5.5 5.5M5.5 1.5L1.5 5.5" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" />
-                                                        </svg>
-                                                        </button>
-                                                )}
-                                            </div>
-                                        )
-                                    })}
-                                    {allItems.length === 0 && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 10px", borderRadius: 7, marginBottom: 2,
-                                            backgroundColor: colors.card.bg, borderLeft: `3px solid ${statusColors.pass}` }}>
-                                            <CheckIcon color={statusColors.pass} />
-                                            <span style={{ fontSize: 12, fontWeight: 500, color: statusColors.pass }}>All frames passed</span>
-                                        </div>
-                                    )}
+                        <div key={entry.section.id}>
+                            {results.sections.length > 1 && (
+                                <span style={{ fontSize: 10, fontWeight: 600, color: colors.text.tertiary, letterSpacing: "0.5px", textTransform: "uppercase" as const, display: "block", marginBottom: 4 }}>
+                                    Section {sIdx + 1}
+                                </span>
+                            )}
+                            {frameEntries.length === 0 && (
+                                <div style={{ padding: "8px 10px", borderRadius: 7, backgroundColor: colors.card.bg, fontSize: 12, color: passColor, marginBottom: 4 }}>
+                                    All frames passed
                                 </div>
                             )}
+                            {frameEntries.map(([nodeId, { nodeName, issues }]) => (
+                                <div key={nodeId}
+                                    onClick={() => { void framer.navigateTo(nodeId, { select: true, zoomIntoView: true }) }}
+                                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                                        padding: "7px 10px", borderRadius: 7, marginBottom: 4,
+                                        backgroundColor: colors.card.bg, cursor: "pointer" }}>
+                                    <span style={{ fontSize: 12, fontWeight: 500, color: colors.text.primary, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        {nodeName}
+                                    </span>
+                                    <span style={{ fontSize: 10, color: failColor, flexShrink: 0, marginLeft: 8, whiteSpace: "nowrap" }}>
+                                        {issues.join(" · ")}
+                                    </span>
+                                </div>
+                            ))}
                         </div>
                     )
                 })}
@@ -788,27 +743,21 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         )
     }
 
-    // Setup view
+    // Setup view — scrollable frame list top, pinned inputs + buttons bottom
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {/* Section header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: colors.text.primary }}>Section {sectionCount}</span>
-                {sections.length > 0 && <span style={{ fontSize: 11, color: colors.text.tertiary }}>{sections.length} saved</span>}
-            </div>
-
-            {/* Frame list */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {currentFrames.length === 0 && (
-                    <div style={{ textAlign: "center", padding: "12px 0", color: colors.text.quaternary, fontSize: 12 }}>
-                        Select frames in Framer then tap below
-                    </div>
-                )}
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+            {/* Scrollable frame list */}
+            <div style={{ flex: 1, overflowY: "auto", paddingTop: 12, paddingBottom: 8 }}>
+                <div style={{ marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: colors.text.secondary }}>
+                        Section {sectionCount}
+                    </span>
+                </div>
                 {currentFrames.map((frame, i) => (
                     <div key={frame.id} onMouseEnter={() => setHoveredFrameIdx(i)} onMouseLeave={() => setHoveredFrameIdx(null)}
                         style={{ position: "relative", display: "flex", alignItems: "center", padding: "7px 10px",
-                            borderRadius: 7, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}` }}>
-                        <span style={{ fontSize: 12, fontWeight: 500, color: colors.text.primary, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            borderRadius: 7, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`, marginBottom: 4 }}>
+                        <span style={{ flex: 1, fontSize: 12, fontWeight: 500, color: colors.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {frame.name}
                         </span>
                         {hoveredFrameIdx === i && (
@@ -819,103 +768,92 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                                 <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
                                     <path d="M1.5 1.5L5.5 5.5M5.5 1.5L1.5 5.5" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" />
                                 </svg>
-                                </button>
+                            </button>
                         )}
                     </div>
                 ))}
                 <button onClick={() => { void handleAddSelected() }} disabled={isAddingFrames}
                     style={{ border: `1px dashed ${colors.card.border}`, borderRadius: 7, padding: "7px 10px",
                         backgroundColor: "transparent", fontSize: 12, color: colors.text.secondary,
-                        cursor: isAddingFrames ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        cursor: isAddingFrames ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                        width: "100%", boxSizing: "border-box" as const }}>
                     {isAddingFrames ? "Reading selection…" : "+ Add selected frames"}
-                    </button>
+                </button>
             </div>
 
-            {/* Divider */}
-            <div style={{ height: 1, backgroundColor: colors.divider }} />
-
-            {/* Gap */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+            {/* Pinned bottom: Gap + Padding + Buttons */}
+            <div style={{ flexShrink: 0, borderTop: `1px solid ${colors.divider}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+                {/* Gap row */}
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <CirclePlusToggle active={checkGap} onToggle={() => setCheckGap((v) => !v)} />
-                    <span style={{ fontSize: 12, color: colors.text.primary }}>Gap</span>
+                    <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Gap</span>
+                    <input type="number" value={gapVal} onChange={(e) => setGapVal(e.target.value)} min={0}
+                        style={{ ...numInputStyle, width: 64 }} />
+                    <input type="range" min={0} max={200}
+                        value={gapVal === "" ? 0 : parseNum(gapVal)}
+                        onChange={(e) => setGapVal(e.target.value)}
+                        style={{ flex: 1, accentColor: "#008CFF", cursor: "pointer", margin: 0 }} />
                 </div>
-                {checkGap && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-                        <input type="number" value={gapVal} onChange={(e) => setGapVal(e.target.value)} min={0}
-                            style={{ ...numInputStyle, width: 72 }} />
-                        <input type="range" min={0} max={200}
-                            value={gapVal === "" ? 0 : parseNum(gapVal)}
-                            onChange={(e) => setGapVal(e.target.value)}
-                            style={{ flex: 1, accentColor: "#008CFF", cursor: "pointer", margin: 0 }} />
-                    </div>
-                )}
-            </div>
 
-            {/* Padding */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <CirclePlusToggle active={checkPadding} onToggle={() => setCheckPadding((v) => !v)} />
-                    <span style={{ fontSize: 12, color: colors.text.primary }}>Padding</span>
-                </div>
-                {checkPadding && (
-                    <>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                {/* Padding row */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Padding</span>
+                        <button onClick={() => setPaddingMode("uniform")} title="Uniform"
+                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "uniform" ? "#008CFF" : colors.card.border}`,
+                                backgroundColor: paddingMode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
+                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
+                                <rect x="4.5" y="4.5" width="5" height="5" rx="0.5" fill={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} opacity="0.6" />
+                            </svg>
+                        </button>
+                        <button onClick={() => setPaddingMode("individual")} title="Individual sides"
+                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "individual" ? "#008CFF" : colors.card.border}`,
+                                backgroundColor: paddingMode === "individual" ? "rgba(0,140,255,0.15)" : colors.card.bg,
+                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
+                                <line x1="2" y1="5" x2="12" y2="5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                                <line x1="2" y1="9" x2="12" y2="9" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                                <line x1="5" y1="2" x2="5" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                                <line x1="9" y1="2" x2="9" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
+                            </svg>
+                        </button>
+                        {paddingMode === "uniform" && (
                             <input type="number" value={uniformPad} onChange={(e) => setUniformPad(e.target.value)} min={0}
-                                style={{ ...numInputStyle, width: 80 }} />
-                            <button onClick={() => setPaddingMode("uniform")} title="Uniform"
-                                style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "uniform" ? "#008CFF" : colors.card.border}`,
-                                    backgroundColor: paddingMode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                    <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
-                                    <rect x="4.5" y="4.5" width="5" height="5" rx="0.5" fill={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} opacity="0.6" />
-                                </svg>
-                                </button>
-                            <button onClick={() => setPaddingMode("individual")} title="Individual sides"
-                                style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "individual" ? "#008CFF" : colors.card.border}`,
-                                    backgroundColor: paddingMode === "individual" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                    <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
-                                    <line x1="2" y1="5" x2="12" y2="5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                                    <line x1="2" y1="9" x2="12" y2="9" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                                    <line x1="5" y1="2" x2="5" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                                    <line x1="9" y1="2" x2="9" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                                </svg>
-                                </button>
-                        </div>
-                        {paddingMode === "individual" && (
-                            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                                {([["T", padT, setPadT], ["R", padR, setPadR], ["B", padB, setPadB], ["L", padL, setPadL]] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>]>).map(([lbl, val, setter]) => (
-                                    <div key={lbl} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                                        <input type="number" value={val} onChange={(e) => setter(e.target.value)} min={0}
-                                            style={{ ...numInputStyle, width: "100%", padding: "5px 2px" }} />
-                                        <span style={{ fontSize: 10, color: colors.text.tertiary }}>{lbl}</span>
-                                    </div>
-                                ))}
-                            </div>
+                                style={{ ...numInputStyle, flex: 1 }} />
                         )}
-                    </>
-                )}
-            </div>
+                    </div>
+                    {paddingMode === "individual" && (
+                        <div style={{ display: "flex", gap: 6 }}>
+                            {([["T", padT, setPadT], ["R", padR, setPadR], ["B", padB, setPadB], ["L", padL, setPadL]] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>]>).map(([lbl, val, setter]) => (
+                                <div key={lbl} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                                    <input type="number" value={val} onChange={(e) => setter(e.target.value)} min={0}
+                                        style={{ ...numInputStyle, width: "100%", padding: "5px 2px" }} />
+                                    <span style={{ fontSize: 10, color: colors.text.tertiary }}>{lbl}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
 
-            {/* Buttons */}
-            <div style={{ display: "flex", gap: 8, paddingBottom: 8 }}>
-                <button onClick={handleNextSection}
-                    style={{ flex: 1, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
-                        borderRadius: 8, padding: "14px 0", fontSize: 12, fontWeight: 600,
-                        color: colors.text.primary, cursor: "pointer" }}>
-                    Next Section
+                {/* Buttons — same height as AUDIT button */}
+                <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={handleNextSection}
+                        style={{ flex: 1, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
+                            borderRadius: 8, padding: "20px 18px", fontSize: 12, fontWeight: 600,
+                            color: colors.text.primary, cursor: "pointer" }}>
+                        Next Section
                     </button>
-                <button onClick={() => { void handleFinish() }} disabled={isChecking}
-                    style={{ flex: 1, background: isChecking ? colors.button.disabledBg : "linear-gradient(177.58deg, #008CFF 2.02%, #0671CA 97.98%)",
-                        border: "none", borderRadius: 8, padding: "14px 0", fontSize: 12, fontWeight: 600,
-                        color: isChecking ? "rgba(255,255,255,0.4)" : "#fff",
-                        cursor: isChecking ? "not-allowed" : "pointer",
-                        display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                    {isChecking ? <><SpinnerIcon color="rgba(255,255,255,0.6)" /> Checking…</> : "Finish"}
+                    <button onClick={() => { void handleFinish() }} disabled={isChecking}
+                        style={{ flex: 1, background: isChecking ? colors.button.disabledBg : "linear-gradient(177.58deg, #008CFF 2.02%, #0671CA 97.98%)",
+                            border: "none", borderRadius: 8, padding: "20px 18px", fontSize: 12, fontWeight: 600,
+                            color: isChecking ? "rgba(255,255,255,0.4)" : "#fff",
+                            cursor: isChecking ? "not-allowed" : "pointer",
+                            display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        {isChecking ? <><SpinnerIcon color="rgba(255,255,255,0.6)" /> Checking…</> : "Finish"}
                     </button>
+                </div>
             </div>
         </div>
     )
@@ -978,103 +916,64 @@ export function App(): React.ReactElement {
 
     return (
         <main style={{ backgroundColor: colors.bg, color: colors.text.primary, position: "relative" }}>
-            {/* Sticky top header — score + tab bar */}
-            <div
-                style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    padding: "14px 0 0",
-                    position: "sticky",
-                    top: 0,
-                    width: "100%",
-                    backgroundColor: colors.bg,
-                    zIndex: 10,
-                    marginBottom: 12,
-                }}
-            >
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                        <LightningIcon color={scoreColor} size={15} />
-                        <span
-                            style={{
-                                fontSize: 22,
-                                fontWeight: 700,
-                                color: scoreColor,
-                                letterSpacing: "-0.5px",
-                                lineHeight: 1,
-                            }}
-                        >
-                            {auditReport ? `${auditReport.score}%` : "—"}
-                        </span>
-                        {auditReport && (
-                            <span
-                                style={{
-                                    fontSize: 12,
-                                    fontWeight: 500,
-                                    color: scoreColor,
-                                    opacity: 0.75,
-                                    alignSelf: "flex-end",
-                                    paddingBottom: 1,
-                                }}
-                            >
-                                {auditReport.scoreLabel}
-                            </span>
-                        )}
-                    </div>
-                    {auditReport && <StatsStrip report={auditReport} theme={theme} />}
-                    {!auditReport && !isRunning && (
-                        <span style={{ fontSize: 11, color: colors.text.quaternary }}>
-                            Not scanned yet
-                        </span>
-                    )}
-                    {isRunning && (
-                        <span style={{ fontSize: 11, color: colors.text.quaternary }}>
-                            Scanning… {scanProgress}%
-                        </span>
-                    )}
-                    {(isRunning || auditReport) && (
-                        <div style={{ height: 2, borderRadius: 1, backgroundColor: colors.divider, overflow: "hidden", marginTop: 1 }}>
-                            <div style={{
-                                height: "100%",
-                                width: `${isRunning ? scanProgress : (auditReport?.score ?? 0)}%`,
-                                backgroundColor: isRunning ? "#008CFF" : scoreColor,
-                                borderRadius: 1,
-                                transition: "width 0.3s ease",
-                            }} />
-                        </div>
-                    )}
-                </div>
-                {/* Tab bar */}
-                <div style={{ borderTop: "1px solid " + colors.divider, display: "flex", width: "100%", marginTop: 4 }}>
-                    <button onClick={() => setActiveTab("results")}
-                        style={{ flex: 1, background: "none", border: "none", borderBottom: activeTab === "results" ? "2px solid #008CFF" : "2px solid transparent",
-                            color: activeTab === "results" ? colors.text.primary : colors.text.secondary,
-                            fontWeight: activeTab === "results" ? 700 : 400,
-                            fontSize: 13, padding: "8px 0", cursor: "pointer" }}>
-                        Results
-                        </button>
-                    <button onClick={() => setActiveTab("padding")}
-                        style={{ flex: 1, background: "none", border: "none", borderBottom: activeTab === "padding" ? "2px solid #008CFF" : "2px solid transparent",
-                            color: activeTab === "padding" ? colors.text.primary : colors.text.secondary,
-                            fontWeight: activeTab === "padding" ? 700 : 400,
-                            fontSize: 13, padding: "8px 0", cursor: "pointer" }}>
-                        Padding & Gap
-                        </button>
-                </div>
+            {/* Tab bar — always at very top */}
+            <div style={{ borderBottom: `1px solid ${colors.divider}`, display: "flex" }}>
+                <button onClick={() => setActiveTab("results")}
+                    style={{ flex: 1, background: "none", border: "none",
+                        borderBottom: activeTab === "results" ? "2px solid #008CFF" : "2px solid transparent",
+                        color: activeTab === "results" ? colors.text.primary : colors.text.secondary,
+                        fontWeight: activeTab === "results" ? 700 : 400,
+                        fontSize: 13, padding: "10px 0", cursor: "pointer" }}>
+                    Results
+                </button>
+                <button onClick={() => setActiveTab("padding")}
+                    style={{ flex: 1, background: "none", border: "none",
+                        borderBottom: activeTab === "padding" ? "2px solid #008CFF" : "2px solid transparent",
+                        color: activeTab === "padding" ? colors.text.primary : colors.text.secondary,
+                        fontWeight: activeTab === "padding" ? 700 : 400,
+                        fontSize: 13, padding: "10px 0", cursor: "pointer" }}>
+                    Padding & Gap
+                </button>
             </div>
 
-            {/* Scrollable content */}
-            <div className="audit-scroll" style={{ paddingBottom: 60 }}>
-                {activeTab === "results" && (
-                    <>
-                        {detailCheck && (
-                            <DetailView
-                                check={detailCheck}
-                                theme={theme}
-                                onBack={closeDetail}
-                            />
-                        )}
+            {/* Results tab */}
+            {activeTab === "results" && (
+                <>
+                    <div className="audit-scroll" style={{ paddingBottom: 60 }}>
+                        {/* Score area — inside Results tab */}
+                        <div style={{ padding: "14px 0 10px", borderBottom: `1px solid ${colors.divider}`, marginBottom: 12 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                                <LightningIcon color={scoreColor} size={15} />
+                                <span style={{ fontSize: 22, fontWeight: 700, color: scoreColor, letterSpacing: "-0.5px", lineHeight: 1 }}>
+                                    {auditReport ? `${auditReport.score}%` : "—"}
+                                </span>
+                                {auditReport && (
+                                    <span style={{ fontSize: 12, fontWeight: 500, color: scoreColor, opacity: 0.75, alignSelf: "flex-end", paddingBottom: 1 }}>
+                                        {auditReport.scoreLabel}
+                                    </span>
+                                )}
+                            </div>
+                            {auditReport && <StatsStrip report={auditReport} theme={theme} />}
+                            {!auditReport && !isRunning && (
+                                <span style={{ fontSize: 11, color: colors.text.quaternary }}>Not scanned yet</span>
+                            )}
+                            {isRunning && (
+                                <span style={{ fontSize: 11, color: colors.text.quaternary }}>Scanning… {scanProgress}%</span>
+                            )}
+                            {(isRunning || auditReport) && (
+                                <div style={{ height: 2, borderRadius: 1, backgroundColor: colors.divider, overflow: "hidden", marginTop: 4 }}>
+                                    <div style={{
+                                        height: "100%",
+                                        width: `${isRunning ? scanProgress : (auditReport?.score ?? 0)}%`,
+                                        backgroundColor: isRunning ? "#008CFF" : scoreColor,
+                                        borderRadius: 1,
+                                        transition: "width 0.3s ease",
+                                    }} />
+                                </div>
+                            )}
+                        </div>
 
+                        {detailCheck && <DetailView check={detailCheck} theme={theme} onBack={closeDetail} />}
                         {!detailCheck && auditReport && auditReport.categories.map((category: CheckCategory) => (
                             <SectionCard
                                 key={category.id}
@@ -1085,104 +984,38 @@ export function App(): React.ReactElement {
                                 onCheckClick={openDetail}
                             />
                         ))}
-
-                        {/* Empty state */}
                         {!detailCheck && !auditReport && (
-                            <div
-                                style={{
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    paddingTop: 60,
-                                    paddingBottom: 40,
-                                    gap: 16,
-                                }}
-                            >
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 60, paddingBottom: 40, gap: 16 }}>
                                 <ScoreRing theme={theme} />
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        alignItems: "center",
-                                        gap: 6,
-                                    }}
-                                >
-                                    <span
-                                        style={{
-                                            fontSize: 13,
-                                            fontWeight: 600,
-                                            color: colors.text.primary,
-                                        }}
-                                    >
-                                        Audit your template
-                                    </span>
-                                    <span
-                                        style={{
-                                            fontSize: 12,
-                                            color: colors.text.tertiary,
-                                            textAlign: "center",
-                                            lineHeight: 1.5,
-                                            maxWidth: 200,
-                                        }}
-                                    >
+                                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 600, color: colors.text.primary }}>Audit your template</span>
+                                    <span style={{ fontSize: 12, color: colors.text.tertiary, textAlign: "center", lineHeight: 1.5, maxWidth: 200 }}>
                                         Checks 28 requirements against the Framer template guidelines
                                     </span>
                                 </div>
                             </div>
                         )}
-                    </>
-                )}
-                {activeTab === "padding" && <PaddingPage theme={theme} colors={colors} />}
-            </div>
+                    </div>
 
-            {/* Fixed footer — AUDIT button visible only on results tab */}
-            {activeTab === "results" && (
-            <div
-                style={{
-                    position: "fixed",
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    padding: "10px 15px",
-                    backgroundColor: colors.bg,
-                    borderTop: `1px solid ${colors.divider}`,
-                    zIndex: 20,
-                }}
-            >
-                <button
-                    onClick={() => { void handleAudit() }}
-                    disabled={isRunning}
-                    style={{
-                        width: "100%",
-                        background: isRunning
-                            ? colors.button.disabledBg
-                            : "linear-gradient(177.58deg, #008CFF 2.02%, #0671CA 97.98%)",
-                        color: isRunning ? "rgba(255,255,255,0.4)" : "#FFFFFF",
-                        border: "none",
-                        borderRadius: 8,
-                        padding: "20px 18px",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: isRunning ? "not-allowed" : "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 6,
-                        letterSpacing: "0.3px",
-                    }}
-                >
-                    {isRunning ? (
-                        <>
-                            <SpinnerIcon color="rgba(255,255,255,0.6)" />
-                            Scanning…
-                        </>
-                    ) : (
-                        "AUDIT"
-                    )}
-                </button>
-            </div>
+                    <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 15px", backgroundColor: colors.bg, borderTop: `1px solid ${colors.divider}`, zIndex: 20 }}>
+                        <button onClick={() => { void handleAudit() }} disabled={isRunning}
+                            style={{
+                                width: "100%",
+                                background: isRunning ? colors.button.disabledBg : "linear-gradient(177.58deg, #008CFF 2.02%, #0671CA 97.98%)",
+                                color: isRunning ? "rgba(255,255,255,0.4)" : "#FFFFFF",
+                                border: "none", borderRadius: 8, padding: "20px 18px",
+                                fontSize: 12, fontWeight: 600,
+                                cursor: isRunning ? "not-allowed" : "pointer",
+                                display: "flex", alignItems: "center", justifyContent: "center", gap: 6, letterSpacing: "0.3px",
+                            }}>
+                            {isRunning ? <><SpinnerIcon color="rgba(255,255,255,0.6)" /> Scanning…</> : "AUDIT"}
+                        </button>
+                    </div>
+                </>
             )}
+
+            {/* Padding tab */}
+            {activeTab === "padding" && <PaddingPage theme={theme} colors={colors} />}
         </main>
     )
 }
