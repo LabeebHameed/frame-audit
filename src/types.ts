@@ -4,6 +4,36 @@ export type ScoreLabel = "All Good" | "Needs Work" | "Issues Found"
 export type CheckItem = {
     readonly label: string
     readonly nodeId: string | null
+    readonly previewUrl?: string | null
+    readonly locked?: boolean
+    readonly badge?: string | null
+    readonly pageLabel?: string | null
+    readonly groupLabel?: string | null
+}
+
+export type PageSpeedMetric = {
+    readonly label: string
+    readonly value: string
+    readonly score: number | null // 0-1
+}
+
+export type PageSpeedCategoryScore = {
+    readonly label: string
+    readonly score: number | null // 0-1
+}
+
+export type PageSpeedStrategyData = {
+    readonly performance: number | null // 0-1
+    readonly accessibility: number | null
+    readonly bestPractices: number | null
+    readonly seo: number | null
+    readonly metrics: ReadonlyArray<PageSpeedMetric>
+    readonly publishedUrl: string
+}
+
+export type PageSpeedData = {
+    readonly desktop: PageSpeedStrategyData | null
+    readonly mobile: PageSpeedStrategyData | null
 }
 
 export type CheckResult = {
@@ -13,6 +43,7 @@ export type CheckResult = {
     readonly detail: string
     readonly items: ReadonlyArray<CheckItem>
     readonly isProgrammatic: boolean
+    readonly pageSpeedData?: PageSpeedData
 }
 
 export type CheckCategory = {
@@ -60,11 +91,17 @@ export type PaddingConfig = {
     readonly left: string
 }
 
+export type PaddingBreakpointConfig = {
+    readonly breakpointId: string // e.g., "L", "M", "S" or full name
+    readonly gap: GapConfig
+    readonly padding: PaddingConfig
+}
+
 export type PaddingSection = {
     readonly id: string
     readonly frames: ReadonlyArray<{ readonly id: string; readonly name: string }>
-    readonly gap: GapConfig
-    readonly padding: PaddingConfig
+    readonly configs: ReadonlyArray<PaddingBreakpointConfig>
+    readonly isLocked: boolean
 }
 
 export type PaddingCheckItem = {
@@ -77,6 +114,7 @@ export type PaddingCheckItem = {
 
 export type PaddingSectionResult = {
     readonly sectionIndex: number
+    readonly breakpointId: string
     readonly items: ReadonlyArray<PaddingCheckItem>
 }
 

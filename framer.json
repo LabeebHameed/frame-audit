@@ -2,7 +2,8 @@
   "id": "fa2e91",
   "name": "Frame Audit",
   "modes": [
-    "canvas"
+    "canvas",
+    "collection"
   ],
   "icon": "/icon.svg",
   "permissions": []

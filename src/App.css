@@ -7,6 +7,9 @@ main {
     padding: 0 15px 15px 15px;
     height: 100%;
     gap: 0;
+    user-select: none;
+    -webkit-user-select: none;
+    -ms-user-select: none;
 }
 
 /* Remove all focus borders and outlines - prevent blue highlights */
@@ -43,6 +46,8 @@ button:active {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+
 
 button {
     transition: opacity 0.15s ease;

@@ -2,11 +2,40 @@ import { framer, isFrameNode } from "framer-plugin"
 import type { CanvasNode } from "framer-plugin"
 import React, { useState, useEffect, useCallback, memo, useRef } from "react"
 import { THEME_COLORS, type ThemeMode } from "./theme"
-import type { AuditReport, CheckResult, CheckCategory, CheckItem, PaddingSection, PaddingMode, PaddingReport } from "./types"
-import { runAudit, checkPaddingAndGap } from "./services/checkers"
+import type { AuditReport, CheckResult, CheckCategory, CheckItem, PageSpeedData, PageSpeedStrategyData, PaddingSection, PaddingMode, PaddingReport } from "./types"
+import { runAudit, runRequirementCheck, calculateScore, checkPaddingAndGap } from "./services/checkers"
 import "./App.css"
 
 framer.showUI({ position: "top right", width: 320, height: 580 })
+
+// Derive an effective audit report by treating checks whose all items are dismissed as "pass".
+// Only warning/fail checks with items are affected; checks with 0 items are left as-is.
+function computeEffectiveReport(
+    report: AuditReport,
+    dismissed: ReadonlyMap<string, ReadonlySet<number>>,
+): AuditReport {
+    const categories = report.categories.map((cat) => ({
+        ...cat,
+        checks: cat.checks.map((check) => {
+            if ((check.status !== "warning" && check.status !== "fail") || check.items.length === 0) return check
+            const dismissedForCheck = dismissed.get(check.id)
+            if (!dismissedForCheck || dismissedForCheck.size < check.items.length) return check
+            // All items dismissed → treat as pass
+            return { ...check, status: "pass" as const, items: check.items }
+        }),
+    }))
+    const scoreResult = calculateScore(categories)
+    return {
+        ...report,
+        categories,
+        score: scoreResult.score,
+        scoreLabel: scoreResult.scoreLabel,
+        totalProgrammatic: scoreResult.totalProgrammatic,
+        passed: scoreResult.passed,
+        warned: scoreResult.warned,
+        failed: scoreResult.failed,
+    }
+}
 
 function detectTheme(): ThemeMode {
     const testDiv = document.createElement("div")
@@ -114,6 +143,191 @@ function ChevronIcon(props: { open: boolean; color: string }): React.ReactElemen
     )
 }
 
+function PageSpeedToggle(props: { enabled: boolean; onChange: (enabled: boolean) => void }): React.ReactElement {
+    return (
+        <button
+            onClick={() => props.onChange(!props.enabled)}
+            style={{
+                background: props.enabled ? "#008CFF" : "rgba(255,255,255,0.08)",
+                border: "none",
+                borderRadius: 5,
+                padding: "5px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                color: props.enabled ? "#FFFFFF" : "rgba(255,255,255,0.5)",
+                transition: "all 0.2s ease",
+                flexShrink: 0,
+            }}
+            title={props.enabled ? "Disable Google PageSpeed check" : "Enable Google PageSpeed check"}
+        >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+            </svg>
+        </button>
+    )
+}
+
+function RecheckButton(props: { onClick: () => void; disabled: boolean }): React.ReactElement {
+    return (
+        <button
+            onClick={props.onClick}
+            disabled={props.disabled}
+            title="Recheck this requirement"
+            style={{
+                width: 25,
+                height: 25,
+                background: "rgba(255,255,255,0.08)",
+                border: "none",
+                borderRadius: 5,
+                padding: 3,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: props.disabled ? "not-allowed" : "pointer",
+                opacity: props.disabled ? 0.45 : 1,
+                flexShrink: 0,
+            }}
+        >
+            {props.disabled ? (
+                <SpinnerIcon color="rgba(255,255,255,0.8)" />
+            ) : (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M11.9309 7.52094C11.7689 9.04338 10.9062 10.4701 9.47882 11.2942C7.10729 12.6634 4.07482 11.8508 2.70562 9.4793L2.55978 9.22671M2.06859 6.47909C2.23064 4.95665 3.09326 3.52997 4.52067 2.70586C6.89221 1.33665 9.92468 2.1492 11.2939 4.52074L11.4397 4.77333M2.03769 10.5385L2.46472 8.94484L4.05842 9.37187M9.94141 4.62817L11.5351 5.0552L11.9621 3.4615" stroke="white" strokeOpacity="0.8" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+            )}
+        </button>
+    )
+}
+
+
+function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep: string } {
+    const guidanceById: Record<string, { whatItMeans: string; nextStep: string }> = {
+        "alt-text": {
+            whatItMeans: "These images are missing alt text.",
+            nextStep: "Add clear alt text that describes the image purpose or content.",
+        },
+        "placeholder-text": {
+            whatItMeans: "These text layers still use placeholder copy.",
+            nextStep: "Replace the placeholder with the final text you want published.",
+        },
+        "component-file-structure": {
+            whatItMeans: "These components or frames are not organized in the expected file structure.",
+            nextStep: "Move the component into the correct file or folder structure so the project stays maintainable.",
+        },
+        "consistent-text-styles": {
+            whatItMeans: "These text layers are mixing multiple style definitions.",
+            nextStep: "Apply a shared text style so the same text role uses the same typography everywhere.",
+        },
+        "text-styles": {
+            whatItMeans: "Some text layers are not using an expected text style.",
+            nextStep: "Assign the correct text style to each flagged layer so typography stays consistent.",
+        },
+        "color-contrast": {
+            whatItMeans: "These text layers do not meet WCAG AA contrast.",
+            nextStep: "Darken the text or lighten the background until every flagged layer reaches at least 4.5:1 contrast.",
+        },
+        "text-legibility": {
+            whatItMeans: "These text layers are too small to read comfortably.",
+            nextStep: "Increase the font size to at least 12px.",
+        },
+        "cms-usage": {
+            whatItMeans: "These collections are empty or not being used as expected.",
+            nextStep: "Add items to the collection or remove the collection if it is no longer needed.",
+        },
+        "cms-field-naming": {
+            whatItMeans: "These CMS fields have naming issues.",
+            nextStep: "Rename the fields so they are clear, consistent, and free of extra spaces.",
+        },
+        "duplicate-cms-content": {
+            whatItMeans: "These CMS items have identical fieldData.",
+            nextStep: "Remove or rewrite duplicate items so each CMS page has unique content.",
+        },
+        "mailto-tel-links": {
+            whatItMeans: "These links are missing the expected mailto/tel format.",
+            nextStep: "Update each link so email actions use mailto: and phone actions use tel:.",
+        },
+        "color-styles": {
+            whatItMeans: "These layers are using colors that should be converted to shared styles.",
+            nextStep: "Apply a reusable color style so the design system stays consistent.",
+        },
+        "contact-form": {
+            whatItMeans: "These forms are missing a send destination or redirect action.",
+            nextStep: "Set a send-to email address or add a redirect URL for the form submission.",
+        },
+        "nav-footer-tags": {
+            whatItMeans: "The shared template is missing the Nav/Footer structure.",
+            nextStep: "Place the Nav component at the top and the Footer component at the bottom of the template.",
+        },
+        "tag-checker": {
+            whatItMeans: "These immediate child sections of a page are missing an HTML tag.",
+            nextStep: "Select each flagged section, open Accessibility, and assign an HTML tag.",
+        },
+        "custom-404-page": {
+            whatItMeans: "A custom 404 page was not detected.",
+            nextStep: "Create a 404 page that helps visitors recover with a clear message and a path back.",
+        },
+        "broken-internal-links": {
+            whatItMeans: "These internal links point to missing or invalid destinations.",
+            nextStep: "Fix the link target so it points to a real page or section in the site.",
+        },
+        "responsive-layout": {
+            whatItMeans: "These frames use a fixed width.",
+            nextStep: "Switch the frame to a responsive width so it can resize with the layout.",
+        },
+        "auto-height": {
+            whatItMeans: "These frames use a fixed height.",
+            nextStep: "Set the frame height to auto or fit-content so it grows with its content.",
+        },
+        "default-fonts": {
+            whatItMeans: "These text layers are using non-default fonts.",
+            nextStep: "Replace the flagged fonts with Framer default fonts.",
+        },
+        "google-pagespeed": {
+            whatItMeans: "This page is being checked against Google PageSpeed metrics.",
+            nextStep: "Review the performance metrics, then fix the slowest items first.",
+        },
+        "active-links": {
+            whatItMeans: "Some linked elements have text that doesn't match their destination.",
+            nextStep: "Update the text or link target so the label clearly describes where the link goes.",
+        },
+        "page-settings": {
+            whatItMeans: "Published site metadata is incomplete.",
+            nextStep: "Set favicon, platform icons, social preview (title/description/image), and SEO title/description in Site Settings, then republish.",
+        },
+        "naming": {
+            whatItMeans: "These frames still use default or unclear names.",
+            nextStep: "Rename each layer so its purpose is obvious when other people inspect the file.",
+        },
+        "h1-tags": {
+            whatItMeans: "The page is missing a clear H1 heading.",
+            nextStep: "Add one H1 per page and make it the main heading users see first.",
+        },
+        "heading-hierarchy": {
+            whatItMeans: "The headings skip levels or appear in the wrong order.",
+            nextStep: "Restructure the heading levels so they move in order from H1 to H2 to H3.",
+        },
+        "overflow": {
+            whatItMeans: "These nodes are larger than their parent containers.",
+            nextStep: "Resize the overflowing layer or increase the parent size so the content fits.",
+        },
+        "breakpoint-widths": {
+            whatItMeans: "The breakpoint widths differ across pages.",
+            nextStep: "Make the breakpoint widths consistent so each page uses the same responsive structure.",
+        },
+        "unused-assets": {
+            whatItMeans: "These assets or components are not being used.",
+            nextStep: "Delete the unused asset or add it where it is actually needed.",
+        },
+    }
+
+    return guidanceById[check.id] ?? {
+        whatItMeans: check.detail || "This check found items that need attention.",
+        nextStep: "Review the flagged layers and update them to match the requirement.",
+    }
+}
+
 // --- Score ring for empty state ---
 
 function ScoreRing(props: { theme: ThemeMode }): React.ReactElement {
@@ -188,9 +402,8 @@ const CheckRow = memo(function CheckRow(props: {
                 padding: "7px 10px",
                 borderRadius: 7,
                 marginBottom: 2,
-                backgroundColor: isPass || isSkip ? "transparent" : colors.card.bg,
-                border: isPass || isSkip ? `1px solid ${colors.card.border}` : `1px solid ${statusColor}28`,
-                borderLeft: isPass || isSkip ? undefined : `3px solid ${statusColor}`,
+                backgroundColor: "transparent",
+                border: `0`,
                 opacity: isSkip ? 0.5 : 1,
                 cursor: isClickable ? "pointer" : "default",
             }}
@@ -310,17 +523,249 @@ const SectionCard = memo(function SectionCard(props: {
 // --- Detail view ---
 
 type ImageAssetEditable = {
+    readonly id?: string
     readonly cloneWithAttributes: (attrs: { altText: string }) => ImageAssetEditable
+}
+
+type FrameNodeWithParent = {
+    readonly id?: string
+    readonly getParent?: (() => Promise<unknown>)
+}
+
+type ComponentNodeWithVariables = {
+    readonly id: string
+    readonly getVariables: (() => Promise<ReadonlyArray<unknown>>)
+}
+
+type ImageVariableEditable = {
+    readonly type?: unknown
+    readonly defaultValue?: unknown
+    readonly setAttributes?: ((attrs: { defaultValue: ImageAssetEditable }) => Promise<unknown>)
+}
+
+function scoreColor(score: number | null): string {
+    if (score === null) return "#888888"
+    if (score >= 0.9) return "#0cce6b"
+    if (score >= 0.5) return "#ffa400"
+    return "#ff4e42"
+}
+
+function ScoreCircle(props: { score: number | null; label: string }): React.ReactElement {
+    const { score, label } = props
+    const pct = score !== null ? Math.round(score * 100) : null
+    const color = scoreColor(score)
+    const radius = 28
+    const stroke = 4
+    const normalizedRadius = radius - stroke / 2
+    const circumference = 2 * Math.PI * normalizedRadius
+    const dash = pct !== null ? (pct / 100) * circumference : 0
+
+    return (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+            <div style={{ position: "relative", width: radius * 2, height: radius * 2 }}>
+                <svg width={radius * 2} height={radius * 2} style={{ transform: "rotate(-90deg)" }}>
+                    <circle
+                        cx={radius}
+                        cy={radius}
+                        r={normalizedRadius}
+                        fill="none"
+                        stroke="rgba(255,255,255,0.1)"
+                        strokeWidth={stroke}
+                    />
+                    <circle
+                        cx={radius}
+                        cy={radius}
+                        r={normalizedRadius}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={stroke}
+                        strokeDasharray={`${dash} ${circumference}`}
+                        strokeLinecap="round"
+                    />
+                </svg>
+                <div style={{
+                    position: "absolute", inset: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 14, fontWeight: 700, color,
+                }}>
+                    {pct !== null ? pct : "—"}
+                </div>
+            </div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 1.2 }}>{label}</div>
+        </div>
+    )
+}
+
+function MetricCard(props: { label: string; value: string; score: number | null }): React.ReactElement {
+    const color = scoreColor(props.score)
+    return (
+        <div style={{
+            background: "rgba(255,255,255,0.06)",
+            borderRadius: 10,
+            padding: "10px 12px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+        }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color }}>{props.value}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)" }}>{props.label}</div>
+        </div>
+    )
+}
+
+function PageSpeedStrategyView(props: { data: PageSpeedStrategyData; publishedUrl: string }): React.ReactElement {
+    const { data } = props
+    const detailsUrl = `https://pagespeed.web.dev/report?url=${encodeURIComponent(props.publishedUrl)}`
+
+    return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, justifyItems: "center" }}>
+                <ScoreCircle score={data.performance} label="Performance" />
+                <ScoreCircle score={data.accessibility} label="Accessibility" />
+                <ScoreCircle score={data.bestPractices} label="Best Practices" />
+                <ScoreCircle score={data.seo} label="SEO" />
+            </div>
+            <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.9)" }}>Performance Metrics</div>
+                    <a
+                        href={detailsUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: 12, color: "#4da3ff", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}
+                    >
+                        See Details
+                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                            <path d="M2 2h8v8M10 2 4 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                    </a>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    {data.metrics.map(m => (
+                        <MetricCard key={m.label} label={m.label} value={m.value} score={m.score} />
+                    ))}
+                </div>
+            </div>
+        </div>
+    )
+}
+
+function PageSpeedDetailView(props: {
+    check: CheckResult
+    theme: ThemeMode
+    onBack: () => void
+    isRunning: boolean
+    onRecheck: () => void
+    isRechecking: boolean
+}): React.ReactElement {
+    const colors = THEME_COLORS[props.theme]
+    const statusColor = getStatusColor(props.check.status, props.theme)
+    const [tab, setTab] = useState<"desktop" | "mobile">("desktop")
+    const data = props.check.pageSpeedData as PageSpeedData
+
+    const tabStyle = (active: boolean): React.CSSProperties => ({
+        flex: 1,
+        padding: "7px 0",
+        fontSize: 13,
+        fontWeight: active ? 600 : 400,
+        color: active ? "#fff" : "rgba(255,255,255,0.5)",
+        background: active ? "rgba(255,255,255,0.12)" : "transparent",
+        border: "none",
+        borderRadius: 8,
+        cursor: "pointer",
+    })
+
+    const strategyData = tab === "desktop" ? data.desktop : data.mobile
+
+    return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%" }}>
+            {/* Back header */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                <button
+                    onClick={props.onBack}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", color: colors.text.secondary }}
+                >
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M11 14L6 9l5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                </button>
+                <span style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary }}>Google PageSpeed</span>
+                <span style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: statusColor,
+                    background: `${statusColor}22`,
+                    borderRadius: 6,
+                    padding: "2px 8px",
+                    textTransform: "uppercase",
+                }}>
+                    {props.check.status}
+                </span>
+                <div style={{ marginLeft: "auto" }}>
+                    <RecheckButton onClick={props.onRecheck} disabled={props.isRechecking || props.isRunning} />
+                </div>
+            </div>
+
+            {props.isRunning ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 180 }}>
+                    <SpinnerIcon color={statusColor} />
+                    <div style={{ fontSize: 13, color: colors.text.secondary, marginTop: 12 }}>Running Google PageSpeed…</div>
+                </div>
+            ) : (
+                <>
+                    {/* Desktop / Mobile tab switcher */}
+                    <div style={{
+                        display: "flex",
+                        background: "rgba(255,255,255,0.06)",
+                        borderRadius: 10,
+                        padding: 3,
+                        marginBottom: 20,
+                    }}>
+                        <button style={tabStyle(tab === "desktop")} onClick={() => setTab("desktop")}>Desktop</button>
+                        <button style={tabStyle(tab === "mobile")} onClick={() => setTab("mobile")}>Mobile</button>
+                    </div>
+
+                    {strategyData ? (
+                        <PageSpeedStrategyView data={strategyData} publishedUrl={strategyData.publishedUrl} />
+                    ) : (
+                        <div style={{ fontSize: 13, color: colors.text.secondary, textAlign: "center", padding: 24 }}>
+                            No data available for {tab}.
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    )
 }
 
 function DetailView(props: {
     check: CheckResult
     theme: ThemeMode
     onBack: () => void
+    dismissedIndices: ReadonlySet<number>
+    onDismiss: (index: number) => void
+    isRunning?: boolean
+    onRecheck: () => void
+    isRechecking: boolean
 }): React.ReactElement {
     const colors = THEME_COLORS[props.theme]
     const statusColor = getStatusColor(props.check.status, props.theme)
+
+    if (props.check.id === "google-pagespeed" && (props.check.pageSpeedData || props.isRunning)) {
+        return (
+            <PageSpeedDetailView
+                check={props.check}
+                theme={props.theme}
+                onBack={props.onBack}
+                isRunning={props.isRunning ?? false}
+                onRecheck={props.onRecheck}
+                isRechecking={props.isRechecking}
+            />
+        )
+    }
+
     const isAltText = props.check.id === "alt-text"
+    const dismissedIndices = props.dismissedIndices
 
     const [altInputs, setAltInputs] = useState<Record<string, string>>(() => {
         if (!isAltText) return {}
@@ -332,8 +777,263 @@ function DetailView(props: {
     })
     const [savingNodes, setSavingNodes] = useState<Set<string>>(new Set())
     const [savedNodes, setSavedNodes] = useState<Set<string>>(new Set())
-    const [dismissedIndices, setDismissedIndices] = useState<Set<number>>(new Set())
+    const [saveErrorsByNodeId, setSaveErrorsByNodeId] = useState<Map<string, string>>(new Map())
     const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+
+    const [componentsOpen, setComponentsOpen] = useState(true)
+    const [framesOpen, setFramesOpen] = useState(true)
+    const [componentLockedOpen, setComponentLockedOpen] = useState(true)
+    const [componentUnlockedOpen, setComponentUnlockedOpen] = useState(true)
+    const [frameLockedOpen, setFrameLockedOpen] = useState(true)
+    const [frameUnlockedOpen, setFrameUnlockedOpen] = useState(true)
+    const [cmsCollectionOpenByName, setCmsCollectionOpenByName] = useState<Map<string, boolean>>(new Map())
+    const [itemGroupByNodeId, setItemGroupByNodeId] = useState<Map<string, "component" | "frame">>(new Map())
+    const [itemLockByNodeId, setItemLockByNodeId] = useState<Map<string, boolean>>(new Map())
+    const [groupingReady, setGroupingReady] = useState(false)
+    const isCmsPagesCheck = props.check.id === "duplicate-cms-content"
+
+    const getCompactItemLabel = useCallback((item: CheckItem): string => {
+        // Keep full text for checks where the value details are useful.
+        const fullLabelChecks = ["responsive-layout", "auto-height", "duplicate-cms-content", "cms-field-naming", "cms-usage", "placeholder-text"]
+        if (fullLabelChecks.includes(props.check.id)) {
+            return item.label
+        }
+
+        const raw = item.label.trim()
+        if (raw.length === 0) return raw
+
+        const colonIndex = raw.indexOf(":")
+        const parenIndex = raw.indexOf(" (")
+        let cutIndex = raw.length
+
+        if (colonIndex > 0) cutIndex = Math.min(cutIndex, colonIndex)
+        if (parenIndex > 0) cutIndex = Math.min(cutIndex, parenIndex)
+
+        const compact = raw.slice(0, cutIndex).trim()
+        return compact.length > 0 ? compact : raw
+    }, [props.check.id])
+
+    useEffect(() => {
+        let cancelled = false
+
+        function isNodeLockedExtensive(node: Record<string, unknown>): boolean {
+            if (typeof node.locked === "boolean") return node.locked
+            if (typeof node.isLocked === "boolean") return node.isLocked
+
+            const position = node.position
+            if (position === "absolute" || position === "fixed") return true
+
+            if (("top" in node && node.top !== null && node.top !== undefined)
+                || ("bottom" in node && node.bottom !== null && node.bottom !== undefined)
+                || ("left" in node && node.left !== null && node.left !== undefined)
+                || ("right" in node && node.right !== null && node.right !== undefined)) {
+                return true
+            }
+
+            return false
+        }
+
+        async function buildItemGroups(): Promise<void> {
+            setGroupingReady(false)
+            const nodeIds = props.check.items
+                .map((item) => item.nodeId)
+                .filter((id): id is string => typeof id === "string")
+            if (nodeIds.length === 0) {
+                setItemGroupByNodeId(new Map())
+                setItemLockByNodeId(new Map())
+                setGroupingReady(true)
+                return
+            }
+
+            try {
+                const [frameNodes, textNodes, svgNodes, componentDefs, componentInstances] = await Promise.all([
+                    framer.getNodesWithType("FrameNode").catch(() => []),
+                    framer.getNodesWithType("TextNode").catch(() => []),
+                    framer.getNodesWithType("SVGNode").catch(() => []),
+                    framer.getNodesWithType("ComponentNode").catch(() => []),
+                    framer.getNodesWithType("ComponentInstanceNode").catch(() => []),
+                ])
+
+                const allCanvasNodes = [
+                    ...frameNodes,
+                    ...textNodes,
+                    ...svgNodes,
+                    ...componentDefs,
+                    ...componentInstances,
+                ] as Array<CanvasNode>
+
+                const nodeById = new Map<string, CanvasNode>()
+                for (const node of allCanvasNodes) {
+                    nodeById.set(node.id, node)
+                }
+
+                const componentIds = new Set<string>()
+                for (const node of componentDefs) componentIds.add(node.id)
+                for (const node of componentInstances) componentIds.add(node.id)
+
+                const parentMap = new Map<string, string>()
+                await Promise.all(
+                    allCanvasNodes.map(async (node) => {
+                        try {
+                            const parent = await node.getParent()
+                            if (parent) parentMap.set(node.id, parent.id)
+                        } catch {
+                            // ignore parent read failures
+                        }
+                    }),
+                )
+
+                const classifyNodeId = (nodeId: string): "component" | "frame" => {
+                    if (componentIds.has(nodeId)) return "component"
+                    const visited = new Set<string>()
+                    let currentId: string | undefined = nodeId
+
+                    while (currentId) {
+                        if (componentIds.has(currentId)) return "component"
+                        if (visited.has(currentId)) break
+                        visited.add(currentId)
+                        const parentId = parentMap.get(currentId)
+                        if (!parentId) break
+                        currentId = parentId
+                    }
+
+                    return "frame"
+                }
+
+                const next = new Map<string, "component" | "frame">()
+                const nextLocks = new Map<string, boolean>()
+
+                const computeEffectiveLock = (nodeId: string): boolean | undefined => {
+                    let currentId: string | undefined = nodeId
+                    const visited = new Set<string>()
+
+                    while (currentId) {
+                        if (visited.has(currentId)) break
+                        visited.add(currentId)
+
+                        const currentNode = nodeById.get(currentId) as unknown as Record<string, unknown> | undefined
+                        if (currentNode && isNodeLockedExtensive(currentNode)) return true
+
+                        const parentId = parentMap.get(currentId)
+                        if (!parentId) break
+                        currentId = parentId
+                    }
+
+                    const selfNode = nodeById.get(nodeId) as unknown as Record<string, unknown> | undefined
+                    if (!selfNode) return undefined
+                    return isNodeLockedExtensive(selfNode)
+                }
+
+                for (const nodeId of nodeIds) {
+                    next.set(nodeId, classifyNodeId(nodeId))
+                    const lockState = computeEffectiveLock(nodeId)
+                    if (lockState !== undefined) nextLocks.set(nodeId, lockState)
+                }
+
+                if (!cancelled) {
+                    setItemGroupByNodeId(next)
+                    setItemLockByNodeId(nextLocks)
+                    setGroupingReady(true)
+                }
+            } catch {
+                if (!cancelled) {
+                    setItemGroupByNodeId(new Map())
+                    setItemLockByNodeId(new Map())
+                    setGroupingReady(true)
+                }
+            }
+        }
+
+        void buildItemGroups()
+        return () => {
+            cancelled = true
+        }
+    }, [props.check.items])
+
+    useEffect(() => {
+        if (!isCmsPagesCheck) {
+            setCmsCollectionOpenByName(new Map())
+            return
+        }
+
+        const collectionNames = Array.from(new Set(props.check.items.map((item) => item.badge?.trim() || "CMS Collection")))
+        setCmsCollectionOpenByName((previous) => {
+            const next = new Map(previous)
+            let didChange = false
+
+            for (const name of collectionNames) {
+                if (!next.has(name)) {
+                    next.set(name, true)
+                    didChange = true
+                }
+            }
+
+            for (const name of Array.from(next.keys())) {
+                if (!collectionNames.includes(name)) {
+                    next.delete(name)
+                    didChange = true
+                }
+            }
+
+            return didChange ? next : previous
+        })
+    }, [isCmsPagesCheck, props.check.items])
+            const renderDismissButton = (
+                onClick: () => void,
+                title: string,
+                style: React.CSSProperties,
+            ) => (
+                <button
+                    onClick={(e) => { e.stopPropagation(); onClick() }}
+                    title={title}
+                    style={style}
+                >
+                    <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
+                        <path d="M1.5 1.5L5.5 5.5M5.5 1.5L1.5 5.5" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" />
+                    </svg>
+                </button>
+            )
+
+            const renderDismissControls = (entries: {item: CheckItem, index: number}[], title: string) => {
+                if (entries.length === 0) return null
+
+                return renderDismissButton(
+                    () => {
+                        entries.forEach(({ index }) => props.onDismiss(index))
+                    },
+                    title,
+                    {
+                        width: 14,
+                        height: 14,
+                        borderRadius: "50%",
+                        backgroundColor: colors.card.bg,
+                        border: `1px solid ${colors.card.border}`,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer",
+                        padding: 0,
+                        flexShrink: 0,
+                    },
+                )
+            }
+
+    const getItemGroup = useCallback((item: CheckItem): "component" | "frame" => {
+        if (item.nodeId !== null) {
+            const grouped = itemGroupByNodeId.get(item.nodeId)
+            if (grouped) return grouped
+        }
+        if (item.label.startsWith("Component '") || item.label.startsWith("Component \"")) return "component"
+        return "frame"
+    }, [itemGroupByNodeId])
+
+    const getItemLock = useCallback((item: CheckItem): boolean | undefined => {
+        if (item.nodeId !== null) {
+            const liveLock = itemLockByNodeId.get(item.nodeId)
+            if (liveLock !== undefined) return liveLock
+        }
+        return item.locked
+    }, [itemLockByNodeId])
 
     const handleGoTo = useCallback(async (nodeId: string) => {
         try {
@@ -343,21 +1043,109 @@ function DetailView(props: {
         }
     }, [])
 
+    const findAncestorComponentNode = useCallback(async (start: unknown): Promise<ComponentNodeWithVariables | null> => {
+        let current = start as FrameNodeWithParent | null
+        let safety = 0
+
+        while (current && safety < 30) {
+            if (typeof current.getParent !== "function") return null
+
+            const parent = await current.getParent().catch(() => null)
+            if (!parent || typeof parent !== "object") return null
+
+            const parentObj = parent as Record<string, unknown>
+            if (typeof parentObj.id === "string" && typeof parentObj.getVariables === "function") {
+                return {
+                    id: parentObj.id,
+                    getVariables: parentObj.getVariables as () => Promise<ReadonlyArray<unknown>>,
+                }
+            }
+
+            current = parent as FrameNodeWithParent
+            safety += 1
+        }
+
+        return null
+    }, [])
+
+    const getImageAssetId = useCallback((value: unknown): string | null => {
+        if (!value || typeof value !== "object") return null
+        const maybeId = (value as { id?: unknown }).id
+        return typeof maybeId === "string" && maybeId.length > 0 ? maybeId : null
+    }, [])
+
+    const getMatchingImageVariables = useCallback((variables: ReadonlyArray<unknown>, imageId: string): ImageVariableEditable[] => {
+        return variables.filter((candidate): candidate is ImageVariableEditable => {
+            if (!candidate || typeof candidate !== "object") return false
+            const variable = candidate as ImageVariableEditable
+            if (variable.type !== "image") return false
+            if (typeof variable.setAttributes !== "function") return false
+
+            const defaultId = getImageAssetId(variable.defaultValue)
+            return defaultId === imageId
+        })
+    }, [getImageAssetId])
+
+    const saveAltTextOnImageVariable = useCallback(async (frameNode: unknown, updated: ImageAssetEditable): Promise<"updated" | "no-match" | "not-component"> => {
+        const ownerComponent = await findAncestorComponentNode(frameNode)
+        if (!ownerComponent) return "not-component"
+
+        const imageId = getImageAssetId(updated)
+        if (!imageId) return "no-match"
+
+        const componentVariables = await ownerComponent.getVariables().catch(() => [])
+        const matchingVariables = getMatchingImageVariables(componentVariables, imageId)
+        if (matchingVariables.length === 0) return "no-match"
+
+        await Promise.all(
+            matchingVariables.map((variable) => variable.setAttributes?.({ defaultValue: updated })),
+        )
+
+        return "updated"
+    }, [])
+
     const handleSaveAltText = useCallback(async (nodeId: string) => {
         const newAltText = altInputs[nodeId]?.trim() ?? ""
         if (!newAltText) return
 
         setSavingNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+        setSaveErrorsByNodeId((prev) => {
+            if (!prev.has(nodeId)) return prev
+            const next = new Map(prev)
+            next.delete(nodeId)
+            return next
+        })
         try {
             const frameNodes = await framer.getNodesWithType("FrameNode")
-            const frame = frameNodes.find((f) => f.id === nodeId) as (Record<string, unknown>) | undefined
-            if (!frame) return
+            const frameNode = frameNodes.find((f) => f.id === nodeId) as unknown
+            if (!frameNode || typeof frameNode !== "object") return
+
+            const frame = frameNode as Record<string, unknown>
 
             const image = frame.backgroundImage as ImageAssetEditable | null
             if (!image || typeof image.cloneWithAttributes !== "function") return
 
             const updated = image.cloneWithAttributes({ altText: newAltText })
-            const framerAny = framer as Record<string, unknown>
+
+            const variableSaveResult = await saveAltTextOnImageVariable(frameNode, updated)
+            if (variableSaveResult === "updated") {
+                setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+                return
+            }
+
+            if (variableSaveResult === "no-match") {
+                setSaveErrorsByNodeId((prev) => {
+                    const next = new Map(prev)
+                    next.set(
+                        nodeId,
+                        "Image is linked to a variable, change alt-text manually.",
+                    )
+                    return next
+                })
+                return
+            }
+
+            const framerAny = framer as unknown as Record<string, unknown>
             if (typeof framerAny.setAttributes === "function") {
                 await (framerAny.setAttributes as (id: string, attrs: Record<string, unknown>) => Promise<void>)(
                     nodeId,
@@ -366,195 +1154,60 @@ function DetailView(props: {
             }
 
             setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+            setSaveErrorsByNodeId((prev) => {
+                if (!prev.has(nodeId)) return prev
+                const next = new Map(prev)
+                next.delete(nodeId)
+                return next
+            })
         } catch {
-            // ignore errors
+            setSaveErrorsByNodeId((prev) => {
+                const next = new Map(prev)
+                next.set(nodeId, "Could not save alt text. Please edit this image directly in Framer.")
+                return next
+            })
         } finally {
             setSavingNodes((prev) => { const n = new Set(prev); n.delete(nodeId); return n })
         }
-    }, [altInputs])
+    }, [altInputs, saveAltTextOnImageVariable])
 
-    return (
-        <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
-            {/* Back button */}
-            <button
-                onClick={props.onBack}
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    background: "none",
-                    border: "none",
-                    color: colors.text.secondary,
-                    fontSize: 12,
-                    fontWeight: 500,
-                    cursor: "pointer",
-                    padding: "0 0 12px 0",
-                    alignSelf: "flex-start",
-                }}
-            >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-                    <path d="M9 2.5L5 7L9 11.5" stroke={colors.text.secondary} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                Back
-            </button>
+    const renderItemMap = (entries: {item: CheckItem, index: number}[]) => (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, width: "100%" }}>
+            {entries.map(({ item, index: i }) => {
+                if (dismissedIndices.has(i)) return null
 
-            {/* Check label + status */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <StatusIcon status={props.check.status} theme={props.theme} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary, flex: 1, minWidth: 0 }}>
-                    {props.check.label}
-                </span>
-            </div>
-
-            {/* Detail text */}
-            {props.check.detail && (
-                <div
-                    style={{
-                        fontSize: 12,
-                        color: colors.text.secondary,
-                        backgroundColor: `${statusColor}0C`,
-                        border: `1px solid ${statusColor}22`,
-                        borderRadius: 7,
-                        padding: "8px 10px",
-                        marginBottom: 12,
-                        lineHeight: 1.5,
-                    }}
-                >
-                    {props.check.detail}
-                </div>
-            )}
-
-            {/* Items list */}
-            {props.check.items.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingBottom: 8, width: "100%" }}>
-                    {props.check.items.map((item: CheckItem, i: number) => {
-                        if (dismissedIndices.has(i)) return null
-
-                        if (isAltText && item.nodeId !== null) {
-                            const nodeId = item.nodeId
-                            const isSaving = savingNodes.has(nodeId)
-                            const isSaved = savedNodes.has(nodeId)
-                            const inputVal = altInputs[nodeId] ?? ""
-                            return (
-                                <div
-                                    key={i}
-                                    onMouseEnter={() => setHoveredIndex(i)}
-                                    onMouseLeave={() => setHoveredIndex(null)}
-                                    style={{ position: "relative", width: "100%", borderRadius: 7, backgroundColor: colors.card.bg, border: `1px solid ${statusColor}28`, borderLeft: `3px solid ${statusColor}` }}
-                                >
-                                    {/* Top row */}
-                                    <div
-                                        style={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            justifyContent: "space-between",
-                                            gap: 6,
-                                            padding: "7px 10px 0",
-                                            width: "100%",
-                                            boxSizing: "border-box",
-                                        }}
-                                    >
-                                        <span
-                                            style={{
-                                                fontSize: 12,
-                                                fontWeight: 500,
-                                                color: colors.text.primary,
-                                                flex: 1,
-                                                minWidth: 0,
-                                                overflow: "hidden",
-                                                textOverflow: "ellipsis",
-                                                whiteSpace: "nowrap",
-                                            }}
-                                        >
-                                            {item.label}
-                                        </span>
-                                        <button
-                                            onClick={() => { void handleGoTo(nodeId) }}
-                                            style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", flexShrink: 0 }}
-                                        >
-                                            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ opacity: 0.55 }}>
-                                                <path d="M2.5 6.5H10.5M7.5 3.5L10.5 6.5L7.5 9.5" stroke={statusColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                                            </svg>
-                                            </button>
-                                    </div>
-                                    {/* Input + save row */}
-                                    <div style={{ display: "flex", gap: 6, padding: "6px 10px 8px" }}>
-                                        <input
-                                            type="text"
-                                            value={inputVal}
-                                            onChange={(e) => {
-                                                const val = e.target.value
-                                                setAltInputs((prev) => ({ ...prev, [nodeId]: val }))
-                                                if (isSaved) setSavedNodes((prev) => { const n = new Set(prev); n.delete(nodeId); return n })
-                                            }}
-                                            placeholder="Enter alt text…"
-                                            disabled={isSaving}
-                                            style={{
-                                                flex: 1,
-                                                minWidth: 0,
-                                                backgroundColor: colors.bg,
-                                                border: `1px solid ${colors.card.border}`,
-                                                borderRadius: 5,
-                                                padding: "5px 8px",
-                                                fontSize: 11,
-                                                color: colors.text.primary,
-                                            }}
-                                        />
-                                        <button
-                                            onClick={() => { void handleSaveAltText(nodeId) }}
-                                            disabled={isSaving || !inputVal.trim()}
-                                            style={{
-                                                flexShrink: 0,
-                                                width: 46,
-                                                backgroundColor: isSaved ? `${colors.status.pass}20` : `${statusColor}20`,
-                                                border: `1px solid ${isSaved ? colors.status.pass : statusColor}50`,
-                                                borderRadius: 5,
-                                                padding: "5px 0",
-                                                fontSize: 11,
-                                                fontWeight: 600,
-                                                color: isSaved ? colors.status.pass : statusColor,
-                                                cursor: isSaving || !inputVal.trim() ? "not-allowed" : "pointer",
-                                                opacity: isSaving || !inputVal.trim() ? 0.45 : 1,
-                                            }}
-                                        >
-                                            {isSaved ? "✓" : isSaving ? "…" : "Save"}
-                                            </button>
-                                    </div>
-                                    {hoveredIndex === i && (
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); setDismissedIndices((prev) => { const n = new Set(prev); n.add(i); return n }) }}
-                                            title="Dismiss"
-                                            style={{ position: "absolute", top: -5, right: -5, width: 14, height: 14, borderRadius: "50%", backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, zIndex: 2 }}
-                                        >
-                                            <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
-                                                <path d="M1.5 1.5L5.5 5.5M5.5 1.5L1.5 5.5" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" />
-                                            </svg>
-                                            </button>
-                                    )}
-                                </div>
-                            )
-                        }
-
-                        return (
+                if (isAltText && item.nodeId !== null) {
+                    const nodeId = item.nodeId
+                    const isSaving = savingNodes.has(nodeId)
+                    const isSaved = savedNodes.has(nodeId)
+                    const inputVal = altInputs[nodeId] ?? ""
+                    const saveError = saveErrorsByNodeId.get(nodeId) ?? null
+                    return (
+                        <div
+                            key={i}
+                            onMouseEnter={() => setHoveredIndex(i)}
+                            onMouseLeave={() => setHoveredIndex(null)}
+                            style={{ position: "relative", width: "100%", borderRadius: 7, backgroundColor: colors.card.bg, border: `1px solid ${statusColor}28`, borderLeft: `3px solid ${statusColor}` }}
+                        >
+                            {/* Top row */}
                             <div
-                                key={i}
-                                onMouseEnter={() => setHoveredIndex(i)}
-                                onMouseLeave={() => setHoveredIndex(null)}
                                 style={{
-                                    position: "relative",
                                     display: "flex",
                                     alignItems: "center",
                                     justifyContent: "space-between",
                                     gap: 6,
-                                    padding: "7px 10px",
-                                    borderRadius: 7,
-                                    backgroundColor: colors.card.bg,
-                                    border: `1px solid ${statusColor}28`,
-                                    borderLeft: `3px solid ${statusColor}`,
-                                    cursor: item.nodeId !== null ? "pointer" : "default",
+                                    padding: "7px 10px 0",
+                                    width: "100%",
+                                    boxSizing: "border-box",
                                 }}
-                                onClick={item.nodeId !== null ? () => { void handleGoTo(item.nodeId as string) } : undefined}
                             >
+                                {item.previewUrl && (
+                                    <img
+                                        src={item.previewUrl}
+                                        style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
+                                        alt=""
+                                    />
+                                )}
                                 <span
                                     style={{
                                         fontSize: 12,
@@ -567,27 +1220,474 @@ function DetailView(props: {
                                         whiteSpace: "nowrap",
                                     }}
                                 >
-                                    {item.label}
+                                    {getCompactItemLabel(item)}
                                 </span>
-                                {item.nodeId !== null && (
-                                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ flexShrink: 0, opacity: 0.55 }}>
+                                <button
+                                    onClick={() => { void handleGoTo(nodeId) }}
+                                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", flexShrink: 0 }}
+                                >
+                                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ opacity: 0.55 }}>
                                         <path d="M2.5 6.5H10.5M7.5 3.5L10.5 6.5L7.5 9.5" stroke={statusColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                                     </svg>
-                                )}
-                                {hoveredIndex === i && (
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); setDismissedIndices((prev) => { const n = new Set(prev); n.add(i); return n }) }}
-                                        title="Dismiss"
-                                        style={{ position: "absolute", top: -5, right: -5, width: 14, height: 14, borderRadius: "50%", backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, zIndex: 2 }}
-                                    >
-                                        <svg width="7" height="7" viewBox="0 0 7 7" fill="none">
-                                            <path d="M1.5 1.5L5.5 5.5M5.5 1.5L1.5 5.5" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" />
-                                        </svg>
-                                        </button>
-                                )}
+                                    </button>
                             </div>
-                        )
-                    })}
+                            {/* Input + save row */}
+                            <div style={{ display: "flex", gap: 6, padding: "6px 10px 8px" }}>
+                                <input
+                                    type="text"
+                                    value={inputVal}
+                                    onChange={(e) => {
+                                        const val = e.target.value
+                                        setAltInputs((prev) => ({ ...prev, [nodeId]: val }))
+                                        if (isSaved) setSavedNodes((prev) => { const n = new Set(prev); n.delete(nodeId); return n })
+                                        if (saveError) {
+                                            setSaveErrorsByNodeId((prev) => {
+                                                if (!prev.has(nodeId)) return prev
+                                                const next = new Map(prev)
+                                                next.delete(nodeId)
+                                                return next
+                                            })
+                                        }
+                                    }}
+                                    placeholder="Enter alt text…"
+                                    disabled={isSaving}
+                                    style={{
+                                        flex: 1,
+                                        minWidth: 0,
+                                        backgroundColor: colors.bg,
+                                        border: `1px solid ${colors.card.border}`,
+                                        borderRadius: 5,
+                                        padding: "5px 8px",
+                                        fontSize: 11,
+                                        color: colors.text.primary,
+                                    }}
+                                />
+                                <button
+                                    onClick={() => { void handleSaveAltText(nodeId) }}
+                                    disabled={isSaving || !inputVal.trim()}
+                                    style={{
+                                        flexShrink: 0,
+                                        width: 46,
+                                        backgroundColor: isSaved ? `${colors.status.pass}20` : `${statusColor}20`,
+                                        border: `1px solid ${isSaved ? colors.status.pass : statusColor}50`,
+                                        borderRadius: 5,
+                                        padding: "5px 0",
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        color: isSaved ? colors.status.pass : statusColor,
+                                        cursor: isSaving || !inputVal.trim() ? "not-allowed" : "pointer",
+                                        opacity: isSaving || !inputVal.trim() ? 0.45 : 1,
+                                    }}
+                                >
+                                    {isSaved ? "✓" : isSaving ? "…" : "Save"}
+                                    </button>
+                            </div>
+                            {saveError && (
+                                <div
+                                    style={{
+                                        padding: "0 10px 8px",
+                                        fontSize: 10,
+                                        lineHeight: 1.35,
+                                        color: colors.status.warning,
+                                    }}
+                                >
+                                    {saveError}
+                                </div>
+                            )}
+                            {hoveredIndex === i && renderDismissButton(
+                                () => props.onDismiss(i),
+                                "Dismiss",
+                                {
+                                    position: "absolute",
+                                    top: -5,
+                                    right: -5,
+                                    width: 14,
+                                    height: 14,
+                                    borderRadius: "50%",
+                                    backgroundColor: colors.card.bg,
+                                    border: `1px solid ${colors.card.border}`,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    cursor: "pointer",
+                                    padding: 0,
+                                    zIndex: 2,
+                                },
+                            )}
+                        </div>
+                    )
+                }
+
+                return (
+                    <div
+                        key={i}
+                        onMouseEnter={() => setHoveredIndex(i)}
+                        onMouseLeave={() => setHoveredIndex(null)}
+                        style={{
+                            position: "relative",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 6,
+                            padding: "7px 10px",
+                            borderRadius: 7,
+                            backgroundColor: colors.card.bg,
+                            border: `1px solid ${statusColor}28`,
+                            borderLeft: `3px solid ${statusColor}`,
+                            cursor: item.nodeId !== null ? "pointer" : "default",
+                        }}
+                        onClick={item.nodeId !== null ? () => { void handleGoTo(item.nodeId as string) } : undefined}
+                    >
+                        <span
+                            style={{
+                                fontSize: 12,
+                                fontWeight: 500,
+                                color: colors.text.primary,
+                                flex: 1,
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            {getCompactItemLabel(item)}
+                        </span>
+                        {item.badge && (
+                            <span
+                                style={{
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    color: colors.text.secondary,
+                                    backgroundColor: `${colors.text.secondary}14`,
+                                    borderRadius: 4,
+                                    padding: "1px 5px",
+                                    flexShrink: 0,
+                                    maxWidth: 120,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                }}
+                            >
+                                {item.badge}
+                            </span>
+                        )}
+                        {item.pageLabel && (getItemGroup(item) === "frame" || props.check.id === "breakpoint-widths") && (
+                            <span
+                                style={{
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    color: colors.badge.text,
+                                    backgroundColor: colors.badge.bg,
+                                    borderRadius: 4,
+                                    padding: "1px 5px",
+                                    flexShrink: 0,
+                                    maxWidth: 120,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                }}
+                            >
+                                {item.pageLabel}
+                            </span>
+                        )}
+                        {item.nodeId !== null && (
+                            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ flexShrink: 0, opacity: 0.55 }}>
+                                <path d="M2.5 6.5H10.5M7.5 3.5L10.5 6.5L7.5 9.5" stroke={statusColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        )}
+                        {hoveredIndex === i && renderDismissButton(
+                            () => props.onDismiss(i),
+                            "Dismiss",
+                            {
+                                position: "absolute",
+                                top: -5,
+                                right: -5,
+                                width: 14,
+                                height: 14,
+                                borderRadius: "50%",
+                                backgroundColor: colors.card.bg,
+                                border: `1px solid ${colors.card.border}`,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: "pointer",
+                                padding: 0,
+                                zIndex: 2,
+                            },
+                        )}
+                    </div>
+                )
+            })}
+        </div>
+    )
+
+    const itemEntries = props.check.items.map((item, i) => ({ item, index: i }))
+    const filteredEntries = itemEntries.filter((e) => !props.dismissedIndices.has(e.index))
+    const useSimpleListLayout = props.check.id === "component-file-structure" || props.check.id === "page-settings"
+    const hasNodeBackedItems = filteredEntries.some((e) => e.item.nodeId !== null)
+    const shouldRenderGroupedItems = !hasNodeBackedItems || groupingReady
+    const passedCount = itemEntries.length - filteredEntries.length
+    const failedCount = filteredEntries.length
+
+    const cmsCollectionGroups = isCmsPagesCheck
+        ? filteredEntries.reduce<Map<string, Array<{ item: CheckItem; index: number }>>>((groups, entry) => {
+            const collectionName = entry.item.groupLabel?.trim() || "CMS Collection"
+            const existing = groups.get(collectionName)
+            if (existing) {
+                existing.push(entry)
+            } else {
+                groups.set(collectionName, [entry])
+            }
+            return groups
+        }, new Map())
+        : new Map<string, Array<{ item: CheckItem; index: number }>>()
+
+    const toggleCmsCollection = useCallback((collectionName: string) => {
+        setCmsCollectionOpenByName((previous) => {
+            const next = new Map(previous)
+            next.set(collectionName, !(next.get(collectionName) ?? true))
+            return next
+        })
+    }, [])
+
+    const componentEntries = filteredEntries.filter((e) => getItemGroup(e.item) === "component")
+    const frameEntries = filteredEntries.filter((e) => getItemGroup(e.item) === "frame")
+
+    const componentHasLockSections = componentEntries.some((e) => getItemLock(e.item) !== undefined)
+    const frameHasLockSections = frameEntries.some((e) => getItemLock(e.item) !== undefined)
+
+    const componentLockedEntries = componentEntries.filter((e) => getItemLock(e.item) === true)
+    const componentUnlockedEntries = componentEntries.filter((e) => getItemLock(e.item) === false)
+    const componentOtherEntries = componentEntries.filter((e) => getItemLock(e.item) === undefined)
+
+    const frameLockedEntries = frameEntries.filter((e) => getItemLock(e.item) === true)
+    const frameUnlockedEntries = frameEntries.filter((e) => getItemLock(e.item) === false)
+    const frameOtherEntries = frameEntries.filter((e) => getItemLock(e.item) === undefined)
+
+    return (
+        <div style={{ display: "flex", flexDirection: "column", width: "100%", alignItems: "flex-start" }}>
+            {/* Back button */}
+            <div style={{ display: "flex", alignItems: "center", width: "100%", marginBottom: 12 }}>
+                <button
+                    onClick={props.onBack}
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        background: "none",
+                        border: "none",
+                        color: colors.text.secondary,
+                        fontSize: 12,
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        padding: 0,
+                        alignSelf: "flex-start",
+                        width: "fit-content",
+                    }}
+                >
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+                        <path d="M9 2.5L5 7L9 11.5" stroke={colors.text.secondary} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Back
+                </button>
+                <div style={{ marginLeft: "auto" }}>
+                    <RecheckButton onClick={props.onRecheck} disabled={props.isRechecking || !!props.isRunning} />
+                </div>
+            </div>
+
+            {/* Check label + status */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, width: "100%" }}>
+                <StatusIcon status={props.check.status} theme={props.theme} />
+                <span style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary, flex: 1, minWidth: 0 }}>
+                    {props.check.label}
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.fail, backgroundColor: `${colors.status.fail}18`, borderRadius: 4, padding: "1px 5px" }}>
+                        {failedCount}
+                    </span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.pass, backgroundColor: `${colors.status.pass}18`, borderRadius: 4, padding: "1px 5px" }}>
+                        {passedCount}
+                    </span>
+                </div>
+            </div>
+
+            {/* Detail text */}
+            {props.check.detail && (() => {
+                const guidance = getDetailGuidance(props.check)
+                return (
+                    <div
+                        style={{
+                            fontSize: 12,
+                            color: colors.text.secondary,
+                            backgroundColor: `${statusColor}0C`,
+                            border: `1px solid ${statusColor}22`,
+                            borderRadius: 7,
+                            padding: "8px 10px",
+                            marginBottom: 12,
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        <div>
+                            {props.check.detail}
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                            {guidance.nextStep}
+                        </div>
+                    </div>
+                )
+            })()}
+
+            {isCmsPagesCheck && props.check.items.length > 0 && shouldRenderGroupedItems && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8, width: "100%" }}>
+                    {Array.from(cmsCollectionGroups.entries()).map(([collectionName, entries]) => (
+                        <div key={collectionName} style={{ border: `1px solid ${colors.card.border}`, borderRadius: 8, overflow: "hidden", backgroundColor: colors.card.bg }}>
+                            <div
+                                onClick={() => toggleCmsCollection(collectionName)}
+                                style={{ padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                            >
+                                <ChevronIcon open={cmsCollectionOpenByName.get(collectionName) ?? true} color={colors.text.quaternary} />
+                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {collectionName} ({entries.length})
+                                </span>
+                            </div>
+                            {(cmsCollectionOpenByName.get(collectionName) ?? true) && (
+                                <div style={{ padding: "0 5px 5px 5px", backgroundColor: colors.card.bg }}>
+                                    {renderItemMap(entries)}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {/* Items list */}
+            {props.check.items.length > 0 && shouldRenderGroupedItems && useSimpleListLayout && !isCmsPagesCheck && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingBottom: 8, width: "100%" }}>
+                    {renderItemMap(filteredEntries)}
+                </div>
+            )}
+
+            {props.check.items.length > 0 && shouldRenderGroupedItems && !useSimpleListLayout && !isCmsPagesCheck && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8, width: "100%" }}>
+                    {componentEntries.length > 0 && (
+                        <div style={{ border: `1px solid ${colors.card.border}`, borderRadius: 8, overflow: "hidden" }}>
+                            <div
+                                onClick={() => setComponentsOpen(!componentsOpen)}
+                                style={{ padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                            >
+                                <ChevronIcon open={componentsOpen} color={colors.text.quaternary} />
+                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Components ({componentEntries.length})</span>
+                            </div>
+                            {componentsOpen && (
+                                <div style={{ padding: "0 6px 6px 6px", backgroundColor: colors.card.bg, display: "flex", flexDirection: "column", gap: 6 }}>
+                                    {componentHasLockSections && componentLockedEntries.length > 0 && (
+                                        <div style={{ border: `1px solid ${colors.card.border}`, borderRadius: 7, overflow: "hidden" }}>
+                                            <div
+                                                onClick={() => setComponentLockedOpen(!componentLockedOpen)}
+                                                style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                                            >
+                                                <ChevronIcon open={componentLockedOpen} color={colors.text.quaternary} />
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Locked ({componentLockedEntries.length})</span>
+                                                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
+                                                    {renderDismissControls(componentLockedEntries, "Dismiss locked items")}
+                                                </div>
+                                            </div>
+                                            {componentLockedOpen && (
+                                                <div style={{ padding: "0 5px 5px 5px", backgroundColor: colors.card.bg }}>
+                                                    {renderItemMap(componentLockedEntries)}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {componentHasLockSections && componentUnlockedEntries.length > 0 && (
+                                        <div style={{ border: `1px solid ${colors.card.border}`, borderRadius: 7, overflow: "hidden" }}>
+                                            <div
+                                                onClick={() => setComponentUnlockedOpen(!componentUnlockedOpen)}
+                                                style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                                            >
+                                                <ChevronIcon open={componentUnlockedOpen} color={colors.text.quaternary} />
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Unlocked ({componentUnlockedEntries.length})</span>
+                                                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
+                                                    {renderDismissControls(componentUnlockedEntries, "Dismiss unlocked items")}
+                                                </div>
+                                            </div>
+                                            {componentUnlockedOpen && (
+                                                <div style={{ padding: "0 5px 5px 5px", backgroundColor: colors.card.bg }}>
+                                                    {renderItemMap(componentUnlockedEntries)}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {(!componentHasLockSections || componentOtherEntries.length > 0) && renderItemMap(componentOtherEntries)}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {frameEntries.length > 0 && (
+                        <div style={{ border: `1px solid ${colors.card.border}`, borderRadius: 8, overflow: "hidden" }}>
+                            <div
+                                onClick={() => setFramesOpen(!framesOpen)}
+                                style={{ padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                            >
+                                <ChevronIcon open={framesOpen} color={colors.text.quaternary} />
+                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Frames ({frameEntries.length})</span>
+                            </div>
+                            {framesOpen && (
+                                <div style={{ padding: "0 6px 6px 6px", backgroundColor: colors.card.bg, display: "flex", flexDirection: "column", gap: 6 }}>
+                                    {frameHasLockSections && frameLockedEntries.length > 0 && (
+                                        <div style={{ border: `1px solid ${colors.card.border}`, borderRadius: 7, overflow: "hidden" }}>
+                                            <div
+                                                onClick={() => setFrameLockedOpen(!frameLockedOpen)}
+                                                style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                                            >
+                                                <ChevronIcon open={frameLockedOpen} color={colors.text.quaternary} />
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Locked ({frameLockedEntries.length})</span>
+                                                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
+                                                    {renderDismissControls(frameLockedEntries, "Dismiss locked items")}
+                                                </div>
+                                            </div>
+                                            {frameLockedOpen && (
+                                                <div style={{ padding: "0 5px 5px 5px", backgroundColor: colors.card.bg }}>
+                                                    {renderItemMap(frameLockedEntries)}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {frameHasLockSections && frameUnlockedEntries.length > 0 && (
+                                        <div style={{ border: `1px solid ${colors.card.border}`, borderRadius: 7, overflow: "hidden" }}>
+                                            <div
+                                                onClick={() => setFrameUnlockedOpen(!frameUnlockedOpen)}
+                                                style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                                            >
+                                                <ChevronIcon open={frameUnlockedOpen} color={colors.text.quaternary} />
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Unlocked ({frameUnlockedEntries.length})</span>
+                                                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
+                                                    {renderDismissControls(frameUnlockedEntries, "Dismiss unlocked items")}
+                                                </div>
+                                            </div>
+                                            {frameUnlockedOpen && (
+                                                <div style={{ padding: "0 5px 5px 5px", backgroundColor: colors.card.bg }}>
+                                                    {renderItemMap(frameUnlockedEntries)}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {(!frameHasLockSections || frameOtherEntries.length > 0) && renderItemMap(frameOtherEntries)}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {props.check.items.length > 0 && !shouldRenderGroupedItems && (
+                <div style={{ width: "100%", paddingBottom: 8 }}>
+                    <div style={{ fontSize: 12, color: colors.text.tertiary, padding: "6px 2px" }}>Loading…</div>
                 </div>
             )}
 
@@ -603,85 +1703,134 @@ function DetailView(props: {
 function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark }): React.ReactElement {
     const { colors } = props
 
-    const [sections, setSections] = useState<PaddingSection[]>([])
-    const [sectionCount, setSectionCount] = useState(1)
-    const [currentFrames, setCurrentFrames] = useState<Array<{ id: string; name: string }>>([])
+    const defaultBpConfig = (id: string): PaddingBreakpointConfig => ({
+        breakpointId: id,
+        gap: { enabled: true, value: "" },
+        padding: { enabled: true, mode: "uniform", uniform: "", top: "", right: "", bottom: "", left: "" }
+    })
+
+    const createEmptySection = (id: string): PaddingSection => ({
+        id,
+        frames: [],
+        configs: [defaultBpConfig("L")],
+        isLocked: false,
+    })
+
+    const [sections, setSections] = useState<PaddingSection[]>([createEmptySection("section-1")])
+    const [currentSectionIndex, setCurrentSectionIndex] = useState(0)
+    const [currentBpId, setCurrentBpId] = useState<string>("L")
+
+    const currentSection = sections[currentSectionIndex]
+    const currentConfig = currentSection?.configs.find((c: PaddingBreakpointConfig) => c.breakpointId === currentBpId) || currentSection?.configs[0]
+
     const [hoveredFrameIdx, setHoveredFrameIdx] = useState<number | null>(null)
     const [isAddingFrames, setIsAddingFrames] = useState(false)
-    const [gapVal, setGapVal] = useState("")
-    const [paddingMode, setPaddingMode] = useState<PaddingMode>("uniform")
-    const [uniformPad, setUniformPad] = useState("")
-    const [padT, setPadT] = useState("")
-    const [padR, setPadR] = useState("")
-    const [padB, setPadB] = useState("")
-    const [padL, setPadL] = useState("")
+    const [addFramesState, setAddFramesState] = useState<"idle" | "active" | "prompt">("idle")
+    const [promptMsg, setPromptMsg] = useState("")
+
     const padRefs = useRef<Array<HTMLInputElement | null>>([null, null, null, null])
     const [results, setResults] = useState<PaddingReport | null>(null)
     const [isChecking, setIsChecking] = useState(false)
     const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set([0]))
+    const [resultsBpFilter, setResultsBpFilter] = useState<string>("L")
 
-    // Auto-focus first T input when switching to individual mode
     useEffect(() => {
-        if (paddingMode === "individual") {
+        if (currentConfig?.padding.mode === "individual" && !currentSection.isLocked) {
             setTimeout(() => padRefs.current[0]?.focus(), 0)
         }
-    }, [paddingMode])
+    }, [currentConfig?.padding.mode, currentSection?.isLocked])
 
-    const parseNum = (v: string): number => Math.max(0, parseInt(v, 10) || 0)
+    const cleanNum = (val: string): string => {
+        if (val === "") return ""
+        const stripped = val.replace(/^0+(?=\d)/, '')
+        const n = parseInt(stripped, 10)
+        return isNaN(n) ? "" : Math.max(0, n).toString()
+    }
+
+    const updateConfig = (updater: (config: PaddingBreakpointConfig) => PaddingBreakpointConfig) => {
+        setSections(prev => {
+            const next = [...prev]
+            const sec = { ...next[currentSectionIndex] }
+            sec.configs = sec.configs.map(c => c.breakpointId === currentConfig.breakpointId ? updater(c) : c)
+            next[currentSectionIndex] = sec
+            return next
+        })
+    }
 
     const handleAddSelected = useCallback(async () => {
         setIsAddingFrames(true)
+        setAddFramesState("active")
         try {
             const framerAny = framer as unknown as Record<string, unknown>
             if (typeof framerAny.getSelection !== "function") return
             const selected = await (framerAny.getSelection as () => Promise<CanvasNode[]>)()
             const frameNodes = selected.filter(isFrameNode)
-            setCurrentFrames((prev) => {
-                const existingIds = new Set(prev.map((f) => f.id))
-                const incoming = frameNodes
-                    .filter((f) => !existingIds.has(f.id))
-                    .map((f) => ({
-                        id: f.id,
-                        name: (typeof (f as unknown as Record<string, unknown>).name === "string"
-                            ? (f as unknown as Record<string, unknown>).name as string : null) || f.id,
-                    }))
-                return [...prev, ...incoming]
-            })
-        } catch { /* ignore */ } finally { setIsAddingFrames(false) }
-    }, [])
+            
+            if (frameNodes.length === 0) {
+                setPromptMsg("No frames selected")
+            } else {
+                setSections(prev => {
+                    const next = [...prev]
+                    const sec = { ...next[currentSectionIndex] }
+                    const existingIds = new Set(sec.frames.map(f => f.id))
+                    const incoming = frameNodes
+                        .filter(f => !existingIds.has(f.id))
+                        .map(f => ({
+                            id: f.id,
+                            name: (typeof (f as unknown as Record<string, unknown>).name === "string" ? (f as unknown as Record<string, unknown>).name as string : null) || f.id,
+                        }))
+                    sec.frames = [...sec.frames, ...incoming]
+                    next[currentSectionIndex] = sec
+                    return next
+                })
+                setPromptMsg(`Added ${frameNodes.length} frames`)
+            }
+        } catch { 
+            setPromptMsg("Error adding frames")
+        } finally { 
+            setIsAddingFrames(false)
+            setAddFramesState("prompt")
+            setTimeout(() => setAddFramesState("idle"), 1500)
+        }
+    }, [currentSectionIndex])
 
-    const buildCurrentSection = useCallback((): PaddingSection => ({
-        id: `section-${sectionCount}`,
-        frames: currentFrames,
-        gap: { enabled: true, value: gapVal },
-        padding: { enabled: true, mode: paddingMode, uniform: uniformPad, top: padT, right: padR, bottom: padB, left: padL },
-    }), [sectionCount, currentFrames, gapVal, paddingMode, uniformPad, padT, padR, padB, padL])
+    const handleAddBreakpoint = useCallback(() => {
+        const availableBps = ["L", "M", "S"]
+        const existingBps = new Set(currentSection.configs.map((c: PaddingBreakpointConfig) => c.breakpointId))
+        const nextBp = availableBps.find(b => !existingBps.has(b))
+        if (!nextBp) return // max reached
 
-    const resetCurrentSection = useCallback(() => {
-        setCurrentFrames([]); setHoveredFrameIdx(null)
-        setGapVal(""); setPaddingMode("uniform")
-        setUniformPad(""); setPadT(""); setPadR(""); setPadB(""); setPadL("")
-    }, [])
+        setSections(prev => {
+            const next = [...prev]
+            const sec = { ...next[currentSectionIndex] }
+            sec.configs = [...sec.configs, defaultBpConfig(nextBp)]
+            next[currentSectionIndex] = sec
+            return next
+        })
+        setCurrentBpId(nextBp)
+    }, [currentSectionIndex, currentSection])
 
     const handleNextSection = useCallback(() => {
-        setSections((prev) => [...prev, buildCurrentSection()])
-        setSectionCount((prev) => prev + 1)
-        resetCurrentSection()
-    }, [buildCurrentSection, resetCurrentSection])
+        setSections(prev => [...prev, createEmptySection(`section-${prev.length + 1}`)])
+        setCurrentSectionIndex(prev => prev + 1)
+        setCurrentBpId("L")
+    }, [])
 
     const handleFinish = useCallback(async () => {
-        const allSections = [...sections, buildCurrentSection()]
         setIsChecking(true)
         try {
-            const report = await checkPaddingAndGap(allSections)
+            const report = await checkPaddingAndGap(sections)
             setResults(report)
+            const availableBps = Array.from(new Set(report.sections.flatMap(s => s.results.map(r => r.breakpointId))))
+            if (availableBps.length > 0 && !availableBps.includes(resultsBpFilter)) {
+                setResultsBpFilter(availableBps[0])
+            }
         } catch { /* ignore */ } finally { setIsChecking(false) }
-    }, [sections, buildCurrentSection])
+    }, [sections, resultsBpFilter])
 
     const handleReset = useCallback(() => {
-        setResults(null); setSections([]); setSectionCount(1)
-        resetCurrentSection()
-    }, [resetCurrentSection])
+        setResults(null); setSections([createEmptySection("section-1")]); setCurrentSectionIndex(0); setCurrentBpId("L")
+    }, [])
 
     const numInputStyle: React.CSSProperties = {
         backgroundColor: colors.input.bg,
@@ -692,27 +1841,50 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         MozAppearance: "textfield" as unknown as undefined,
     }
 
-    // Results view — SectionCard + CheckRow design, same as main audit results
     if (results !== null) {
         const s = THEME_COLORS[props.theme].status
+        const availableBps = Array.from(new Set(results.sections.flatMap(sec => sec.results.map(r => r.breakpointId))))
         return (
             <>
             <div style={{ flex: 1, overflowY: "auto", paddingTop: 12, paddingBottom: 60 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" as const, color: colors.text.secondary, display: "block", marginBottom: 8 }}>
-                    Results
-                </span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" as const, color: colors.text.secondary }}>
+                        Results
+                    </span>
+                    {availableBps.length > 0 && (
+                        <div style={{ display: "flex", backgroundColor: colors.card.bg, borderRadius: 6, border: `1px solid ${colors.card.border}`, overflow: "hidden" }}>
+                            {availableBps.map((bp, i) => (
+                                <button
+                                    key={bp}
+                                    onClick={() => setResultsBpFilter(bp)}
+                                    style={{
+                                        backgroundColor: bp === resultsBpFilter ? colors.card.border : "transparent",
+                                        color: bp === resultsBpFilter ? colors.text.primary : colors.text.secondary,
+                                        border: "none", padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer",
+                                        borderRight: i < availableBps.length - 1 ? `1px solid ${colors.card.border}` : "none"
+                                    }}
+                                >
+                                    {bp}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
                 {results.sections.map((entry, sIdx) => {
+                    const bpResult = entry.results.find(r => r.breakpointId === resultsBpFilter)
+                    if (!bpResult) return null
+
                     const failMap = new Map<string, { nodeName: string; issues: string[] }>()
-                    for (const r of entry.results) {
-                        for (const item of r.items) {
-                            const existing = failMap.get(item.nodeId)
-                            if (existing) {
-                                existing.issues.push(`${item.property}: ${item.expected}≠${item.actual}`)
-                            } else {
-                                failMap.set(item.nodeId, { nodeName: item.nodeName, issues: [`${item.property}: ${item.expected}≠${item.actual}`] })
-                            }
+                    for (const item of bpResult.items) {
+                        const existing = failMap.get(item.nodeId)
+                        if (existing) {
+                            existing.issues.push(`${item.property}: ${item.expected}≠${item.actual}`)
+                        } else {
+                            failMap.set(item.nodeId, { nodeName: item.nodeName, issues: [`${item.property}: ${item.expected}≠${item.actual}`] })
                         }
                     }
+                    
                     const failingIds = new Set(failMap.keys())
                     const passingFrames = entry.section.frames.filter(f => !failingIds.has(f.id))
                     const isOpen = expandedSections.has(sIdx)
@@ -721,9 +1893,9 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                         if (next.has(sIdx)) next.delete(sIdx); else next.add(sIdx)
                         return next
                     })
+
                     return (
                         <div key={entry.section.id} style={{ marginBottom: 6 }}>
-                            {/* SectionCard-style header */}
                             <div onClick={toggleSection}
                                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
                                     padding: "8px 10px", borderRadius: 8,
@@ -732,7 +1904,7 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                                 <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                                     <ChevronIcon open={isOpen} color={colors.text.quaternary} />
                                     <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" as const, color: colors.text.secondary }}>
-                                        Section {sIdx + 1}
+                                        Check {sIdx + 1}
                                     </span>
                                 </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -748,12 +1920,11 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                                     )}
                                 </div>
                             </div>
-                            {/* CheckRow-style items */}
                             {isOpen && (
                                 <div style={{ paddingTop: 4 }}>
                                     {Array.from(failMap.entries()).map(([nodeId, { nodeName, issues }]) => (
                                         <div key={nodeId}
-                                            onClick={() => { void framer.navigateTo(nodeId, { select: true, zoomIntoView: true }) }}
+                                            onClick={() => { void framer.navigateTo(nodeId, { select: true }) }}
                                             style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 6,
                                                 padding: "7px 10px", borderRadius: 7, marginBottom: 2,
                                                 backgroundColor: colors.card.bg,
@@ -777,7 +1948,7 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                                     ))}
                                     {passingFrames.map(frame => (
                                         <div key={frame.id}
-                                            onClick={() => { void framer.navigateTo(frame.id, { select: true, zoomIntoView: true }) }}
+                                            onClick={() => { void framer.navigateTo(frame.id, { select: true }) }}
                                             style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6,
                                                 padding: "7px 10px", borderRadius: 7, marginBottom: 2,
                                                 backgroundColor: "transparent", border: `1px solid ${colors.card.border}`,
@@ -804,7 +1975,6 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                     )
                 })}
             </div>
-            {/* Fixed footer Reset — same style as AUDIT button */}
             <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 15px", backgroundColor: colors.bg, borderTop: `1px solid ${colors.divider}`, zIndex: 20 }}>
                 <button onClick={handleReset}
                     style={{ width: "100%", background: "linear-gradient(177.58deg, #008CFF 2.02%, #0671CA 97.98%)",
@@ -818,25 +1988,45 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         )
     }
 
-    // Setup view — scrollable frame list top, pinned inputs + buttons bottom
+    const availableBpsInConfig = currentSection.configs.map((c: PaddingBreakpointConfig) => c.breakpointId)
+    const canAddBp = availableBpsInConfig.length < 3
+
     return (
         <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-            {/* Scrollable frame list */}
             <div style={{ flex: 1, overflowY: "auto", paddingTop: 12, paddingBottom: 8 }}>
-                <div style={{ marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: colors.text.secondary }}>
-                        Section {sectionCount}
-                    </span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <button onClick={() => setCurrentSectionIndex(i => Math.max(0, i - 1))} disabled={currentSectionIndex === 0}
+                            style={{ background: "none", border: "none", color: currentSectionIndex === 0 ? colors.text.quaternary : colors.text.secondary, cursor: "pointer", padding: "0 4px", fontSize: 16 }}>
+                            ‹
+                        </button>
+                        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: colors.text.secondary }}>
+                            Check {currentSectionIndex + 1}
+                        </span>
+                        <button onClick={() => setCurrentSectionIndex(i => Math.min(sections.length - 1, i + 1))} disabled={currentSectionIndex === sections.length - 1}
+                            style={{ background: "none", border: "none", color: currentSectionIndex === sections.length - 1 ? colors.text.quaternary : colors.text.secondary, cursor: "pointer", padding: "0 4px", fontSize: 16 }}>
+                            ›
+                        </button>
+                    </div>
                 </div>
-                {currentFrames.map((frame, i) => (
-                    <div key={frame.id} onMouseEnter={() => setHoveredFrameIdx(i)} onMouseLeave={() => setHoveredFrameIdx(null)}
+
+                {currentSection.frames.map((frame, i) => (
+                    <div key={Math.random()} onMouseEnter={() => setHoveredFrameIdx(i)} onMouseLeave={() => setHoveredFrameIdx(null)}
                         style={{ position: "relative", display: "flex", alignItems: "center", padding: "7px 10px",
                             borderRadius: 7, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`, marginBottom: 4 }}>
                         <span style={{ flex: 1, fontSize: 12, fontWeight: 500, color: colors.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {frame.name}
                         </span>
                         {hoveredFrameIdx === i && (
-                            <button onClick={() => setCurrentFrames((prev) => prev.filter((_, j) => j !== i))}
+                            <button onClick={() => {
+                                setSections(prev => {
+                                    const next = [...prev]
+                                    const sec = { ...next[currentSectionIndex] }
+                                    sec.frames = sec.frames.filter((_, j) => j !== i)
+                                    next[currentSectionIndex] = sec
+                                    return next
+                                })
+                            }}
                                 style={{ flexShrink: 0, width: 16, height: 16, borderRadius: "50%",
                                     backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
                                     display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, marginLeft: 6 }}>
@@ -847,88 +2037,151 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                         )}
                     </div>
                 ))}
-                <button onClick={() => { void handleAddSelected() }} disabled={isAddingFrames}
-                    style={{ border: `1px dashed ${colors.card.border}`, borderRadius: 7, padding: "7px 10px",
-                        backgroundColor: "transparent", fontSize: 12, color: colors.text.secondary,
-                        cursor: isAddingFrames ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                        width: "100%", boxSizing: "border-box" as const }}>
-                    {isAddingFrames ? "Reading selection…" : "+ Add selected frames"}
+
+                <button onClick={() => { void handleAddSelected() }} 
+                    disabled={addFramesState !== "idle"}
+                    style={{ 
+                        border: `1px ${addFramesState === 'prompt' ? 'solid' : 'dashed'} ${addFramesState === 'prompt' ? '#008CFF' : colors.card.border}`, 
+                        borderRadius: 7, padding: "7px 10px",
+                        backgroundColor: addFramesState === "prompt" ? "rgba(0,140,255,0.1)" : "transparent", 
+                        fontSize: 12, 
+                        color: addFramesState === "prompt" ? "#008CFF" : colors.text.secondary,
+                        cursor: addFramesState === "active" ? "wait" : "pointer", 
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        width: "100%", boxSizing: "border-box" as const,
+                        marginTop: 4
+                    }}>
+                    {addFramesState === "active" ? "Reading selection…" : addFramesState === "prompt" ? promptMsg : "+ Add selected frames"}
                 </button>
             </div>
 
-            {/* Pinned bottom: Gap + Padding + Buttons */}
             <div style={{ flexShrink: 0, borderTop: `1px solid ${colors.divider}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-                {/* Gap row */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Gap</span>
-                    <input type="number" value={gapVal} onChange={(e) => setGapVal(e.target.value)} min={0}
-                        style={{ ...numInputStyle, width: 64 }} />
-                    <input type="range" min={0} max={200}
-                        value={gapVal === "" ? 0 : parseNum(gapVal)}
-                        onChange={(e) => setGapVal(e.target.value)}
-                        style={{ flex: 1, accentColor: "#008CFF", cursor: "pointer", margin: 0 }} />
+                {/* Breakpoints control row */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                    <button onClick={handleAddBreakpoint}
+                        disabled={!canAddBp || currentSection.isLocked}
+                        style={{ backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 11, fontWeight: 600, color: canAddBp ? colors.text.primary : colors.text.tertiary, cursor: canAddBp && !currentSection.isLocked ? "pointer" : "default" }}
+                    >
+                        Add Breakpoints...
+                    </button>
+                    <button onClick={() => {
+                        setSections(prev => {
+                            const next = [...prev]
+                            next[currentSectionIndex] = { ...next[currentSectionIndex], isLocked: !next[currentSectionIndex].isLocked }
+                            return next
+                        })
+                    }}
+                        style={{ width: 28, height: 28, backgroundColor: currentSection.isLocked ? "rgba(0,140,255,0.15)" : colors.card.bg, border: `1px solid ${currentSection.isLocked ? "#008CFF" : colors.card.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+                    >
+                        {currentSection.isLocked ? (
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <path d="M9.5 5.5V10.5C9.5 11.0523 9.05228 11.5 8.5 11.5H3.5C2.94772 11.5 2.5 11.0523 2.5 10.5V5.5C2.5 4.94772 2.94772 4.5 3.5 4.5H8.5C9.05228 4.5 9.5 4.94772 9.5 5.5Z" stroke="#008CFF" strokeWidth="1.2" strokeLinejoin="round"/>
+                                <path d="M3.5 4.5V3.5C3.5 2.11929 4.61929 1 6 1C7.38071 1 8.5 2.11929 8.5 3.5V4.5" stroke="#008CFF" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                        ) : (
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <path d="M10 3.5L4.5 9L2 6.5" stroke={colors.text.secondary} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        )}
+                    </button>
                 </div>
 
-                {/* Padding row — single line, inputs inline */}
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                    <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0, paddingTop: 7 }}>Padding</span>
-                    <button onClick={() => setPaddingMode("uniform")} title="Uniform"
-                        style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "uniform" ? "#008CFF" : colors.card.border}`,
-                            backgroundColor: paddingMode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                            <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
-                            <rect x="4.5" y="4.5" width="5" height="5" rx="0.5" fill={paddingMode === "uniform" ? "#008CFF" : colors.text.tertiary} opacity="0.6" />
-                        </svg>
-                    </button>
-                    <button onClick={() => setPaddingMode("individual")} title="Individual sides"
-                        style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${paddingMode === "individual" ? "#008CFF" : colors.card.border}`,
-                            backgroundColor: paddingMode === "individual" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                            <rect x="2" y="2" width="10" height="10" rx="1.5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
-                            <line x1="2" y1="5" x2="12" y2="5" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                            <line x1="2" y1="9" x2="12" y2="9" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                            <line x1="5" y1="2" x2="5" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                            <line x1="9" y1="2" x2="9" y2="12" stroke={paddingMode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1" />
-                        </svg>
-                    </button>
-                    {paddingMode === "uniform" && (
-                        <input type="number" value={uniformPad} onChange={(e) => setUniformPad(e.target.value)} min={0}
-                            style={{ ...numInputStyle, flex: 1 }} />
-                    )}
-                    {paddingMode === "individual" && (
-                        <div style={{ flex: 1, display: "flex", gap: 8 }}>
-                            {([["T", padT, setPadT, 0], ["R", padR, setPadR, 1], ["B", padB, setPadB, 2], ["L", padL, setPadL, 3]] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>, number]>).map(([lbl, val, setter, idx]) => (
-                                <div key={lbl} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                                    <input
-                                        ref={el => { padRefs.current[idx] = el }}
-                                        type="number" value={val} onChange={(e) => setter(e.target.value)} min={0}
-                                        onKeyDown={(e) => {
-                                            if (e.key === "Enter" || e.key === " ") {
-                                                e.preventDefault()
-                                                padRefs.current[idx + 1]?.focus()
-                                            } else if (e.key === "Backspace" && val === "") {
-                                                e.preventDefault()
-                                                padRefs.current[idx - 1]?.focus()
-                                            }
-                                        }}
-                                        style={{ ...numInputStyle, width: "100%", height: 28, padding: 0, fontSize: 10 }}
-                                    />
-                                    <span style={{ fontSize: 8, lineHeight: 1, color: colors.text.tertiary }}>{lbl}</span>
-                                </div>
+                {/* Sub-config body, dimmed if locked */}
+                <div style={{ opacity: currentSection.isLocked ? 0.4 : 1, pointerEvents: currentSection.isLocked ? "none" : "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Type</span>
+                        <div style={{ display: "flex", backgroundColor: colors.card.bg, borderRadius: 6, border: `1px solid ${colors.card.border}`, overflow: "hidden" }}>
+                            {availableBpsInConfig.map((bpId: string, i: number) => (
+                                <button
+                                    key={bpId}
+                                    onClick={() => setCurrentBpId(bpId)}
+                                    style={{
+                                        backgroundColor: bpId === currentBpId ? colors.card.border : "transparent",
+                                        color: bpId === currentBpId ? colors.text.primary : colors.text.secondary,
+                                        border: "none", padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                                        borderRight: i < availableBpsInConfig.length - 1 ? `1px solid ${colors.card.border}` : "none"
+                                    }}
+                                >
+                                    {bpId}
+                                </button>
                             ))}
                         </div>
-                    )}
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                <circle cx="5" cy="5" r="4.5" stroke={colors.text.tertiary} strokeWidth="1" />
+                                <path d="M5 2V8M2 5H8" stroke={colors.text.tertiary} strokeWidth="1" strokeLinecap="round" />
+                            </svg>
+                            Gap
+                        </span>
+                        <input type="number" placeholder="0" value={currentConfig.gap.value} onChange={(e) => updateConfig(c => ({ ...c, gap: { ...c.gap, value: cleanNum(e.target.value) } }))} min={0}
+                            style={{ ...numInputStyle, width: 44 }} />
+                        <input type="range" min={0} max={200}
+                            value={currentConfig.gap.value === "" ? 0 : parseInt(currentConfig.gap.value, 10)}
+                            onChange={(e) => updateConfig(c => ({ ...c, gap: { ...c.gap, value: cleanNum(e.target.value) } }))}
+                            style={{ flex: 1, accentColor: "#008CFF", cursor: "pointer", margin: 0 }} />
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0, paddingTop: 7 }}>Padding</span>
+                        <button onClick={() => updateConfig(c => ({ ...c, padding: { ...c.padding, mode: "uniform" } }))} title="Uniform"
+                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${currentConfig.padding.mode === "uniform" ? "#008CFF" : colors.card.border}`,
+                                backgroundColor: currentConfig.padding.mode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
+                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <rect x="2" y="2" width="10" height="10" rx="2" stroke={currentConfig.padding.mode === "uniform" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
+                            </svg>
+                        </button>
+                        <button onClick={() => updateConfig(c => ({ ...c, padding: { ...c.padding, mode: "individual" } }))} title="Individual sides"
+                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${currentConfig.padding.mode === "individual" ? "#008CFF" : colors.card.border}`,
+                                backgroundColor: currentConfig.padding.mode === "individual" ? "rgba(0,140,255,0.15)" : colors.card.bg,
+                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <rect x="2" y="2" width="10" height="10" rx="2" stroke={currentConfig.padding.mode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" strokeDasharray="2 2" />
+                            </svg>
+                        </button>
+                        {currentConfig.padding.mode === "uniform" && (
+                            <input type="number" placeholder="0" value={currentConfig.padding.uniform} onChange={(e) => updateConfig(c => ({ ...c, padding: { ...c.padding, uniform: cleanNum(e.target.value) } }))} min={0}
+                                style={{ ...numInputStyle, flex: 1 }} />
+                        )}
+                        {currentConfig.padding.mode === "individual" && (
+                            <div style={{ flex: 1, display: "flex", gap: 8 }}>
+                                {([["T", currentConfig.padding.top, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, top: cleanNum(v) } })), 0], 
+                                   ["R", currentConfig.padding.right, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, right: cleanNum(v) } })), 1], 
+                                   ["B", currentConfig.padding.bottom, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, bottom: cleanNum(v) } })), 2], 
+                                   ["L", currentConfig.padding.left, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, left: cleanNum(v) } })), 3]] as Array<[string, string, (v: string) => void, number]>).map(([lbl, val, setter, idx]) => (
+                                    <div key={lbl} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                                        <input
+                                            ref={el => { padRefs.current[idx] = el }}
+                                            type="number" placeholder="0" value={val} onChange={(e) => setter(e.target.value)} min={0}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" || e.key === " ") {
+                                                    e.preventDefault()
+                                                    padRefs.current[idx + 1]?.focus()
+                                                } else if (e.key === "Backspace" && val === "") {
+                                                    e.preventDefault()
+                                                    padRefs.current[idx - 1]?.focus()
+                                                }
+                                            }}
+                                            style={{ ...numInputStyle, width: "100%", height: 28, padding: 0, fontSize: 10 }}
+                                        />
+                                        <span style={{ fontSize: 8, lineHeight: 1, color: colors.text.tertiary }}>{lbl}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
                 </div>
 
-                {/* Buttons — same height as AUDIT button */}
-                <div style={{ display: "flex", gap: 8 }}>
+                {/* Main buttons */}
+                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                     <button onClick={handleNextSection}
                         style={{ flex: 1, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
                             borderRadius: 8, padding: "20px 18px", fontSize: 12, fontWeight: 600,
                             color: colors.text.primary, cursor: "pointer" }}>
-                        Next Section
+                        New Check
                     </button>
                     <button onClick={() => { void handleFinish() }} disabled={isChecking}
                         style={{ flex: 1, background: isChecking ? colors.button.disabledBg : "linear-gradient(177.58deg, #008CFF 2.02%, #0671CA 97.98%)",
@@ -936,7 +2189,7 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                             color: isChecking ? "rgba(255,255,255,0.4)" : "#fff",
                             cursor: isChecking ? "not-allowed" : "pointer",
                             display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                        {isChecking ? <><SpinnerIcon color="rgba(255,255,255,0.6)" /> Checking…</> : "Finish"}
+                        {isChecking ? <><SpinnerIcon color="rgba(255,255,255,0.6)" /> Checking…</> : "Audit"}
                     </button>
                 </div>
             </div>
@@ -954,6 +2207,10 @@ export function App(): React.ReactElement {
     const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
     const [detailCheck, setDetailCheck] = useState<CheckResult | null>(null)
     const [activeTab, setActiveTab] = useState<"results" | "padding">("results")
+    const [dismissedItems, setDismissedItems] = useState<Map<string, Set<number>>>(new Map())
+    const [scoreVersion, setScoreVersion] = useState<number>(0)
+    const [pageSpeedEnabled, setPageSpeedEnabled] = useState<boolean>(true)
+    const [recheckingCheckId, setRecheckingCheckId] = useState<string | null>(null)
 
     useEffect(() => {
         setTheme(detectTheme())
@@ -963,17 +2220,18 @@ export function App(): React.ReactElement {
         setIsRunning(true)
         setDetailCheck(null)
         setScanProgress(0)
+        setDismissedItems(new Map())
         try {
             const report = await runAudit((done, total) => {
                 setScanProgress(Math.round((done / total) * 100))
-            })
+            }, pageSpeedEnabled)
             setAuditReport(report)
             setExpandedSections(new Set())
+            setScoreVersion((v) => v + 1)
         } finally {
             setIsRunning(false)
-            // Don't reset scanProgress — the bar transitions to showing the score
         }
-    }, [])
+    }, [pageSpeedEnabled])
 
     const toggleSection = useCallback((id: string) => {
         setExpandedSections((prev) => {
@@ -995,9 +2253,246 @@ export function App(): React.ReactElement {
         setDetailCheck(null)
     }, [])
 
+    const handleGetSelection = useCallback(async () => {
+        try {
+            const framerAny = framer as unknown as Record<string, unknown>
+            if (typeof framerAny.getSelection !== "function") {
+                window.console.log("[Audit Plugin] getSelection() is not available in this context.")
+                return
+            }
+
+            const selection = await (framerAny.getSelection as () => Promise<CanvasNode[]>)()
+
+            const withParents = await Promise.all(
+                selection.map(async (node) => {
+                    const getNodeType = (n: CanvasNode): string | null => {
+                        const nAny = n as unknown as Record<string, unknown>
+                        if (typeof nAny.type === "string") return nAny.type
+                        if (typeof nAny.kind === "string") return nAny.kind
+                        if (typeof nAny.__type === "string") return nAny.__type
+                        const ctorName = (n as unknown as { constructor?: { name?: string } }).constructor?.name
+                        return typeof ctorName === "string" ? ctorName : null
+                    }
+
+                    let parentId: string | null = null
+                    const ancestors: Array<{ id: string; name: string | null; type: string | null }> = []
+                    try {
+                        let current = await node.getParent()
+                        parentId = current ? current.id : null
+
+                        let depth = 0
+                        while (current && depth < 20) {
+                            const currentAny = current as unknown as Record<string, unknown>
+                            ancestors.push({
+                                id: current.id,
+                                name: typeof currentAny.name === "string" ? currentAny.name : null,
+                                type: getNodeType(current as unknown as CanvasNode),
+                            })
+                            current = await current.getParent()
+                            depth++
+                        }
+                    } catch {
+                        parentId = null
+                    }
+                    const nodeAny = node as unknown as Record<string, unknown>
+                    const controls = (nodeAny.controls && typeof nodeAny.controls === "object") ? (nodeAny.controls as Record<string, unknown>) : {}
+                    const typedControls = (nodeAny.typedControls && typeof nodeAny.typedControls === "object") ? (nodeAny.typedControls as Record<string, unknown>) : {}
+
+                    const controlKeys = Object.keys(controls)
+                    const typedControlKeys = Object.keys(typedControls)
+                    const typedControlTypes = typedControlKeys.reduce<Record<string, string | null>>((acc, key) => {
+                        const value = typedControls[key]
+                        if (value && typeof value === "object") {
+                            const vAny = value as Record<string, unknown>
+                            acc[key] = typeof vAny.type === "string" ? vAny.type : null
+                        } else {
+                            acc[key] = null
+                        }
+                        return acc
+                    }, {})
+
+                    // Collect all enumerable keys on the node and its prototype chain
+                    const allKeys = new Set<string>()
+                    let proto: object | null = nodeAny as object
+                    while (proto && proto !== Object.prototype) {
+                        for (const k of Object.getOwnPropertyNames(proto)) allKeys.add(k)
+                        proto = Object.getPrototypeOf(proto) as object | null
+                    }
+
+                    // Snapshot every key's value (scalars only; objects shown as "[object]")
+                    const rawProps: Record<string, unknown> = {}
+                    for (const k of allKeys) {
+                        try {
+                            const v = (nodeAny as Record<string, unknown>)[k]
+                            rawProps[k] = typeof v === "function" ? "[function]"
+                                : v === null ? null
+                                : typeof v === "object" ? `[object: ${Object.prototype.toString.call(v)}]`
+                                : v
+                        } catch {
+                            rawProps[k] = "[error reading]"
+                        }
+                    }
+
+                    // Try getNodesWithAttributeSet with candidate tag attribute names
+                    const candidateAttrs = ["tag", "htmlTag", "__htmlTag", "accessibilityTag", "semanticTag", "ariaRole", "role", "nodeTag", "elementTag"]
+                    const attributeSetResults: Record<string, string[]> = {}
+                    for (const attr of candidateAttrs) {
+                        try {
+                            const results = await (node as unknown as { getNodesWithAttributeSet: (a: string) => Promise<Array<{ id: string; name?: string }>> }).getNodesWithAttributeSet(attr)
+                            attributeSetResults[attr] = results.map((r) => `${r.id}${r.name ? ` (${r.name})` : ""}`)
+                        } catch (e) {
+                            attributeSetResults[attr] = [`[error: ${String(e)}]`]
+                        }
+                    }
+
+                    // Also try framer-level getNodesWithAttributeSet (engine method, null = global search)
+                    const framerAttributeSetResults: Record<string, unknown> = {}
+                    const engineGetNodesWithAttributeSet = framerAny["getNodesWithAttributeSet"] as ((attr: string) => Promise<unknown[]>) | undefined
+                    if (typeof engineGetNodesWithAttributeSet === "function") {
+                        for (const attr of candidateAttrs) {
+                            try {
+                                const results = await engineGetNodesWithAttributeSet(attr)
+                                framerAttributeSetResults[attr] = results.slice(0, 5)
+                            } catch (e) {
+                                framerAttributeSetResults[attr] = `[error: ${String(e)}]`
+                            }
+                        }
+                    } else {
+                        framerAttributeSetResults["_note"] = "framer.getNodesWithAttributeSet not available"
+                    }
+
+                    // Get the matching raw FrameNode from framer.getNodesWithType to compare properties
+                    let rawFrameNodeProps: Record<string, unknown> = {}
+                    try {
+                        const allFrames = await framer.getNodesWithType("FrameNode")
+                        const match = allFrames.find((f) => f.id === node.id)
+                        if (match) {
+                            const matchAny = match as unknown as Record<string, unknown>
+                            const rawKeys = new Set<string>()
+                            let rproto: object | null = matchAny as object
+                            while (rproto && rproto !== Object.prototype) {
+                                for (const k of Object.getOwnPropertyNames(rproto)) rawKeys.add(k)
+                                rproto = Object.getPrototypeOf(rproto) as object | null
+                            }
+                            for (const k of rawKeys) {
+                                try {
+                                    const v = matchAny[k]
+                                    rawFrameNodeProps[k] = typeof v === "function" ? "[function]"
+                                        : v === null ? null
+                                        : typeof v === "object" ? `[object: ${Object.prototype.toString.call(v)}]`
+                                        : v
+                                } catch {
+                                    rawFrameNodeProps[k] = "[error]"
+                                }
+                            }
+                        } else {
+                            rawFrameNodeProps["_note"] = "node not found in getNodesWithType(FrameNode)"
+                        }
+                    } catch (e) {
+                        rawFrameNodeProps["_error"] = String(e)
+                    }
+
+                    return {
+                        id: node.id,
+                        name: typeof nodeAny.name === "string" ? nodeAny.name : null,
+                        type: getNodeType(node),
+                        className: typeof nodeAny.__class === "string" ? nodeAny.__class : null,
+                        componentIdentifier: typeof nodeAny.componentIdentifier === "string" ? nodeAny.componentIdentifier : null,
+                        componentName: typeof nodeAny.componentName === "string" ? nodeAny.componentName : null,
+                        insertURL: typeof nodeAny.insertURL === "string" ? nodeAny.insertURL : null,
+                        attributeSetResults,
+                        framerAttributeSetResults,
+                        rawFrameNodeProps,
+                        allKeys: Array.from(allKeys).filter((k) => !k.startsWith("__proto__")),
+                        rawProps,
+                        controlKeys,
+                        typedControlKeys,
+                        typedControlTypes,
+                        parentId,
+                        ancestors,
+                    }
+                }),
+            )
+
+            const selectionSummary = withParents.map((node) => ({
+                id: node.id,
+                name: node.name,
+                type: node.type,
+                className: node.className,
+                componentIdentifier: node.componentIdentifier,
+                componentName: node.componentName,
+                insertURL: node.insertURL,
+                parentId: node.parentId,
+                controlKeys: node.controlKeys,
+                typedControlKeys: node.typedControlKeys,
+                typedControlTypes: node.typedControlTypes,
+            }))
+
+            window.console.groupCollapsed("[Audit Plugin] Current selection")
+            window.console.log("Raw selection:", selection)
+            window.console.log("Selection snapshot:", withParents)
+            window.console.table(selectionSummary)
+            window.console.groupEnd()
+        } catch (error) {
+            window.console.log("[Audit Plugin] Failed to read selection:", error)
+        }
+    }, [])
+
+    const handleRecheck = useCallback(async () => {
+        if (!detailCheck) return
+
+        const checkId = detailCheck.id
+        setRecheckingCheckId(checkId)
+        try {
+            const updatedCheck = await runRequirementCheck(checkId, pageSpeedEnabled)
+            if (!updatedCheck) return
+
+            setDismissedItems((prev) => {
+                const next = new Map(prev)
+                next.delete(checkId)
+                return next
+            })
+
+            setDetailCheck(updatedCheck)
+            setAuditReport((prev) => {
+                if (!prev) return prev
+                const categories = prev.categories.map((category) => ({
+                    ...category,
+                    checks: category.checks.map((check) => (check.id === updatedCheck.id ? updatedCheck : check)),
+                }))
+                const scoreResult = calculateScore(categories)
+                return {
+                    ...prev,
+                    categories,
+                    score: scoreResult.score,
+                    scoreLabel: scoreResult.scoreLabel,
+                    totalProgrammatic: scoreResult.totalProgrammatic,
+                    passed: scoreResult.passed,
+                    warned: scoreResult.warned,
+                    failed: scoreResult.failed,
+                    runAt: Date.now(),
+                }
+            })
+            setScoreVersion((v) => v + 1)
+        } finally {
+            setRecheckingCheckId(null)
+        }
+    }, [detailCheck, pageSpeedEnabled])
+
+    const handleDismiss = useCallback((checkId: string, index: number) => {
+        setDismissedItems((prev) => {
+            const next = new Map(prev)
+            const set = new Set(next.get(checkId) ?? [])
+            set.add(index)
+            next.set(checkId, set)
+            return next
+        })
+        setScoreVersion((v) => v + 1)
+    }, [])
 
     const colors = THEME_COLORS[theme]
-    const scoreColor = auditReport ? getScoreColor(auditReport.score, theme) : colors.text.quaternary
+    const effectiveReport = auditReport ? computeEffectiveReport(auditReport, dismissedItems) : null
+    const scoreColor = effectiveReport ? getScoreColor(effectiveReport.score, theme) : colors.text.quaternary
 
     return (
         <main style={{ backgroundColor: colors.bg, color: colors.text.primary, position: "relative" }}>
@@ -1010,7 +2505,7 @@ export function App(): React.ReactElement {
                         color: activeTab === "results" ? colors.text.primary : colors.text.secondary,
                         fontWeight: activeTab === "results" ? 700 : 400,
                         fontSize: 13, padding: "10px 0", cursor: "pointer", marginBottom: -1 }}>
-                    Results
+                    Results 
                 </button>
                 <button onClick={() => setActiveTab("padding")}
                     style={{ flex: 1, background: "none", border: "none", borderRadius: 0,
@@ -1026,50 +2521,97 @@ export function App(): React.ReactElement {
             <div style={{ display: activeTab === "results" ? "flex" : "none", flexDirection: "column", flex: 1 }}>
                         {/* Score area — pinned, never scrolls */}
                         <div style={{ padding: "14px 0 10px", marginBottom: 12, flexShrink: 0 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                                <LightningIcon color={scoreColor} size={15} />
-                                <span style={{ fontSize: 22, fontWeight: 700, color: scoreColor, letterSpacing: "-0.5px", lineHeight: 1 }}>
-                                    {auditReport ? `${auditReport.score}%` : "—"}
-                                </span>
-                                {auditReport && (
-                                    <span style={{ fontSize: 12, fontWeight: 500, color: scoreColor, opacity: 0.75, alignSelf: "flex-end", paddingBottom: 1 }}>
-                                        {auditReport.scoreLabel}
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 7 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                                    <span style={{ fontSize: 22, fontWeight: 700, color: scoreColor, letterSpacing: "-0.5px", lineHeight: 1 }}>
+                                        {effectiveReport ? `${effectiveReport.score}%` : "—"}
                                     </span>
-                                )}
+                                    {effectiveReport && (
+                                        <span style={{ fontSize: 12, fontWeight: 500, color: scoreColor, opacity: 0.75, alignSelf: "flex-end", paddingBottom: 1 }}>
+                                            {effectiveReport.scoreLabel}
+                                        </span>
+                                    )}
+                                </div>
+                                <PageSpeedToggle enabled={pageSpeedEnabled} onChange={setPageSpeedEnabled} />
                             </div>
-                            {auditReport && <StatsStrip report={auditReport} theme={theme} />}
-                            {!auditReport && !isRunning && (
+                            {effectiveReport && <StatsStrip report={effectiveReport} theme={theme} />}
+                            {!effectiveReport && !isRunning && (
                                 <span style={{ fontSize: 11, color: colors.text.quaternary }}>Not scanned yet</span>
                             )}
                             {isRunning && (
                                 <span style={{ fontSize: 11, color: colors.text.quaternary }}>Scanning… {scanProgress}%</span>
                             )}
-                            {(isRunning || auditReport) && (
+                            {(isRunning || effectiveReport) && (
                                 <div style={{ height: 2, borderRadius: 1, backgroundColor: colors.divider, overflow: "hidden", marginTop: 4 }}>
-                                    <div style={{
-                                        height: "100%",
-                                        width: `${isRunning ? scanProgress : (auditReport?.score ?? 0)}%`,
-                                        backgroundColor: isRunning ? "#008CFF" : scoreColor,
-                                        borderRadius: 1,
-                                        transition: "width 0.3s ease",
-                                    }} />
+                                    <div
+                                        key={scoreVersion}
+                                        style={{
+                                            height: "100%",
+                                            width: `${isRunning ? scanProgress : (effectiveReport?.score ?? 0)}%`,
+                                            backgroundColor: isRunning ? "#008CFF" : scoreColor,
+                                            borderRadius: 1,
+                                            transition: "width 0.3s ease",
+                                        }}
+                                    />
                                 </div>
                             )}
                         </div>
 
                     <div className="audit-scroll" style={{ paddingBottom: 60 }}>
-                        {detailCheck && <DetailView check={detailCheck} theme={theme} onBack={closeDetail} />}
-                        {!detailCheck && auditReport && auditReport.categories.map((category: CheckCategory) => (
-                            <SectionCard
-                                key={category.id}
-                                category={category}
+                        {!detailCheck && (
+                            <div style={{ marginBottom: 6 }}>
+                                <button
+                                    onClick={() => { void handleGetSelection() }}
+                                    style={{
+                                        width: "100%",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        padding: "8px 10px",
+                                        borderRadius: 8,
+                                        backgroundColor: colors.card.bg,
+                                        border: `1px solid ${colors.card.border}`,
+                                        cursor: "pointer",
+                                        userSelect: "none",
+                                    }}
+                                >
+                                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", color: colors.text.secondary }}>
+                                        Get Selection
+                                    </span>
+                                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, opacity: 0.4 }}>
+                                        <path d="M3.5 2L6.5 5L3.5 8" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                </button>
+                            </div>
+                        )}
+
+                        {detailCheck && (
+                            <DetailView
+                                check={detailCheck}
                                 theme={theme}
-                                isExpanded={expandedSections.has(category.id)}
-                                onToggle={() => toggleSection(category.id)}
-                                onCheckClick={openDetail}
+                                onBack={closeDetail}
+                                dismissedIndices={dismissedItems.get(detailCheck.id) ?? new Set()}
+                                onDismiss={(index) => handleDismiss(detailCheck.id, index)}
+                                isRunning={isRunning}
+                                onRecheck={() => { void handleRecheck() }}
+                                isRechecking={recheckingCheckId === detailCheck.id}
                             />
-                        ))}
-                        {!detailCheck && !auditReport && (
+                        )}
+                        {!detailCheck && effectiveReport && (
+                            <>
+                                {effectiveReport.categories.map((category: CheckCategory) => (
+                                    <SectionCard
+                                        key={category.id}
+                                        category={category}
+                                        theme={theme}
+                                        isExpanded={expandedSections.has(category.id)}
+                                        onToggle={() => toggleSection(category.id)}
+                                        onCheckClick={openDetail}
+                                    />
+                                ))}
+                            </>
+                        )}
+                        {!detailCheck && !effectiveReport && (
                             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 60, paddingBottom: 40, gap: 16 }}>
                                 <ScoreRing theme={theme} />
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
@@ -1078,6 +2620,7 @@ export function App(): React.ReactElement {
                                         Checks 28 requirements against the Framer template guidelines
                                     </span>
                                 </div>
+                                <PageSpeedToggle enabled={pageSpeedEnabled} onChange={setPageSpeedEnabled} />
                             </div>
                         )}
                     </div>
