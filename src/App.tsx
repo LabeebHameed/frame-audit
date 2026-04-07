@@ -225,6 +225,10 @@ function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep:
             whatItMeans: "Some text layers still contain lorem ipsum placeholder words.",
             nextStep: "Replace every flagged placeholder phrase or token with final content.",
         },
+        "spelling-check": {
+            whatItMeans: "Some text layers contain words that are likely misspelled.",
+            nextStep: "Review each flagged word and correct any spelling mistakes in the source text.",
+        },
         "component-file-structure": {
             whatItMeans: "These components or frames are not organized in the expected file structure.",
             nextStep: "Move the component into the correct file or folder structure so the project stays maintainable.",

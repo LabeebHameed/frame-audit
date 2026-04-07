@@ -1,5 +1,8 @@
 import { framer, $framerInternal, isComponentGestureVariant } from "framer-plugin"
 import type { CanvasNode, ComponentNode, FrameNode, PublishInfo } from "framer-plugin"
+import dictionaryAff from "../assets/spelling/en.aff?raw"
+import dictionaryDic from "../assets/spelling/en.dic?raw"
+import nspell from "nspell"
 import * as ts from "typescript"
 import type { AuditReport, CheckCategory, CheckItem, CheckResult, CheckStatus, PageSpeedData, PageSpeedMetric, PageSpeedStrategyData, PaddingCheckItem, PaddingReport, PaddingSection, PaddingSectionResult, ScoreLabel } from "../types"
 
@@ -125,6 +128,48 @@ type PublishedMetadataInfo = {
     readonly hasTitle: boolean
     readonly hasDescription: boolean
     readonly hasDefaultTitle: boolean
+}
+
+type HunspellDictionary = {
+    readonly aff: Uint8Array | string
+    readonly dic: Uint8Array | string
+}
+
+type SpellChecker = {
+    readonly correct: (word: string) => boolean
+    readonly add: (word: string) => unknown
+}
+
+let spellCheckerPromise: Promise<SpellChecker | null> | null = null
+
+const SPELLING_IGNORE_WORDS = new Set<string>([
+    "framer", "cms", "seo", "ui", "ux", "webflow", "figma", "api", "apis", "url", "urls",
+    "mailto", "tel", "cta", "navbar", "footer", "hero", "faq", "youtube", "instagram", "linkedin",
+    "whatsapp", "tiktok", "behance", "dribbble", "substack", "notion", "github", "gitlab", "medium",
+])
+
+async function getSpellChecker(): Promise<SpellChecker | null> {
+    if (spellCheckerPromise) return spellCheckerPromise
+
+    spellCheckerPromise = Promise.resolve().then(() => {
+        try {
+            const createSpellChecker = nspell as unknown as (dictionary: HunspellDictionary) => SpellChecker
+            const spellChecker = createSpellChecker({
+                aff: dictionaryAff,
+                dic: dictionaryDic,
+            })
+
+            for (const word of SPELLING_IGNORE_WORDS) {
+                spellChecker.add(word)
+            }
+
+            return spellChecker
+        } catch {
+            return null
+        }
+    })
+
+    return spellCheckerPromise
 }
 
 type SemanticMetadataApiResponse = {
@@ -2550,6 +2595,59 @@ async function checkLoremIpsum(nodes: AllNodes): Promise<CheckResult> {
     }
 
     return makeCheck(id, label, "fail", `${flagged.length} text layer(s) contain lorem placeholder content`, flagged, true)
+}
+
+async function checkSpelling(nodes: AllNodes): Promise<CheckResult> {
+    const id = "spelling-check"
+    const label = "Spelling Check"
+
+    const spellChecker = await getSpellChecker()
+    if (!spellChecker) {
+        return skipCheck(id, label, "Offline dictionary unavailable")
+    }
+
+    const misspelled = new Map<string, CheckItem>()
+
+    const tokenize = (text: string): ReadonlyArray<string> => {
+        const sanitized = text
+            .replace(/\bhttps?:\/\/\S+\b/gi, " ")
+            .replace(/\bwww\.\S+\b/gi, " ")
+            .replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g, " ")
+            .replace(/\+?[\d][\d\s().-]{7,}\d/g, " ")
+
+        const tokens = sanitized.match(/[A-Za-z][A-Za-z'-]*/g)
+        return tokens ?? []
+    }
+
+    for (const node of nodes.textNodes) {
+        if (!isPrimaryScopedNode(nodes, node.id)) continue
+        if (nodes.nodesInAnyVariant.has(node.id)) continue
+        if (nodes.textNodesInSvg.has(node.id)) continue
+
+        const text = (await getNodeText(node)).trim()
+        if (text.length === 0) continue
+
+        for (const token of tokenize(text)) {
+            const normalized = token.replace(/^'+|'+$/g, "")
+            if (normalized.length < 3) continue
+            if (/^[A-Z]{2,}$/.test(normalized)) continue
+
+            const lower = normalized.toLowerCase()
+            if (SPELLING_IGNORE_WORDS.has(lower)) continue
+            if (spellChecker.correct(lower)) continue
+
+            if (!misspelled.has(lower)) {
+                misspelled.set(lower, { label: lower, nodeId: node.id })
+            }
+        }
+    }
+
+    const issues = Array.from(misspelled.values())
+    if (issues.length === 0) {
+        return makeCheck(id, label, "pass", "No misspellings found", [], true)
+    }
+
+    return makeCheck(id, label, "warning", `${issues.length} possible misspelling(s) found`, issues, true)
 }
 
 async function checkComponentFileStructure(_nodes: AllNodes): Promise<CheckResult> {
@@ -6295,7 +6393,7 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
 async function runAudit(onProgress?: (done: number, total: number) => void, enablePageSpeed: boolean = true): Promise<AuditReport> {
     const nodes = await fetchAllNodes()
 
-    const TOTAL = 32
+    const TOTAL = 33
     let completed = 0
 
     function track<T>(p: Promise<T> | T): Promise<T> {
@@ -6315,6 +6413,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         // Text
         repetitiveText,
         loremIpsum,
+        spellingCheck,
         defaultFonts,
         textLegibility,
         consistentTextStyles,
@@ -6354,6 +6453,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         track(checkUnusedAssets(nodes)),
         track(checkRepetitiveText(nodes)),
         track(checkLoremIpsum(nodes)),
+        track(checkSpelling(nodes)),
         track(checkDefaultFonts(nodes)),
         track(checkTextLegibility(nodes)),
         track(checkConsistentTextStyles(nodes)),
@@ -6391,7 +6491,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         {
             id: "text",
             label: "Text",
-            checks: [repetitiveText, loremIpsum, defaultFonts, textLegibility, consistentTextStyles, textStyles],
+            checks: [repetitiveText, loremIpsum, spellingCheck, defaultFonts, textLegibility, consistentTextStyles, textStyles],
         },
         {
             id: "design",
@@ -6449,6 +6549,7 @@ async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = t
         case "unused-assets": return checkUnusedAssets(nodes)
         case "placeholder-text": return checkRepetitiveText(nodes)
         case "lorem-ipsum": return checkLoremIpsum(nodes)
+        case "spelling-check": return checkSpelling(nodes)
         case "default-fonts": return checkDefaultFonts(nodes)
         case "text-legibility": return checkTextLegibility(nodes)
         case "consistent-text-styles": return checkConsistentTextStyles(nodes)
