@@ -1317,6 +1317,93 @@ function getFrameBackgroundImage(frame: FrameNode): ImageAsset | null {
     return (frame.backgroundImage as ImageAsset | null) ?? null
 }
 
+function extractImageDimensionFromAssetRecord(asset: Record<string, unknown>): { width: number | null; height: number | null } {
+    const widthCandidates = [asset.width, asset.pixelWidth, asset.naturalWidth, asset.originalWidth]
+    const heightCandidates = [asset.height, asset.pixelHeight, asset.naturalHeight, asset.originalHeight]
+
+    const toNumber = (value: unknown): number | null => {
+        if (typeof value === "number" && Number.isFinite(value)) return value
+        if (typeof value === "string") {
+            const parsed = Number(value)
+            if (Number.isFinite(parsed)) return parsed
+        }
+        return null
+    }
+
+    const width = widthCandidates.map((candidate) => toNumber(candidate)).find((candidate) => candidate !== null) ?? null
+    const height = heightCandidates.map((candidate) => toNumber(candidate)).find((candidate) => candidate !== null) ?? null
+    return { width, height }
+}
+
+async function getImageDimensionsFromUrl(url: string): Promise<{ width: number | null; height: number | null }> {
+    return new Promise((resolve) => {
+        const img = new Image()
+        const timeoutId = window.setTimeout(() => {
+            resolve({ width: null, height: null })
+        }, 8000)
+
+        img.onload = () => {
+            window.clearTimeout(timeoutId)
+            const width = Number.isFinite(img.naturalWidth) ? img.naturalWidth : null
+            const height = Number.isFinite(img.naturalHeight) ? img.naturalHeight : null
+            resolve({ width, height })
+        }
+        img.onerror = () => {
+            window.clearTimeout(timeoutId)
+            resolve({ width: null, height: null })
+        }
+        img.src = url
+    })
+}
+
+function getMimeTypeFromUnknown(value: unknown): string | null {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim().toLowerCase()
+    if (value !== null && typeof value === "object") {
+        const record = value as Record<string, unknown>
+        for (const key of ["mimeType", "type", "format", "contentType"]) {
+            const candidate = record[key]
+            if (typeof candidate === "string" && candidate.trim().length > 0) {
+                return candidate.trim().toLowerCase()
+            }
+        }
+    }
+    return null
+}
+
+async function getAssetBytesFromUnknown(value: unknown): Promise<number | null> {
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value === "string") {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed)) return parsed
+    }
+    if (value === null || typeof value !== "object") return null
+
+    const record = value as Record<string, unknown>
+    for (const key of ["size", "bytes", "fileSize", "sizeBytes", "byteLength", "length"]) {
+        const candidate = record[key]
+        if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate
+        if (typeof candidate === "string") {
+            const parsed = Number(candidate)
+            if (Number.isFinite(parsed)) return parsed
+        }
+    }
+
+    const bytesValue = record.bytes
+    if (bytesValue instanceof Uint8Array) return bytesValue.byteLength
+
+    const getData = record.getData
+    if (typeof getData === "function") {
+        try {
+            const data = await (getData as () => Promise<Record<string, unknown>> )()
+            if (data && data.bytes instanceof Uint8Array) return data.bytes.byteLength
+        } catch {
+            // Ignore unavailable data payload.
+        }
+    }
+
+    return null
+}
+
 function normalizeNonEmptyText(value: unknown): string | null {
     if (typeof value !== "string") return null
     const trimmed = value.trim()
@@ -1453,6 +1540,7 @@ type PageImageCandidate = {
     readonly assetId: string | null
     readonly altText: string | null
     readonly previewUrl: string | null
+    readonly source: unknown
 }
 
 function collectImageCandidatesFromValue(value: unknown): ReadonlyArray<PageImageCandidate> {
@@ -1480,7 +1568,7 @@ function collectImageCandidatesFromValue(value: unknown): ReadonlyArray<PageImag
 
         if (looksLikeImageAsset || looksLikeImageControl) {
             const key = assetId ?? path
-            candidates.push({ key, assetId, altText, previewUrl })
+            candidates.push({ key, assetId, altText, previewUrl, source: candidate })
         }
 
         const nestedPriorityKeys = ["defaultValue", "value", "image", "asset", "controls", "typedControls", "props", "properties", "componentProperties"]
@@ -1992,6 +2080,11 @@ async function getCmsItemNodeIds(nodes: AllNodes): Promise<ReadonlySet<string>> 
 
     return ids
 }
+
+function isPrimaryScopedNode(nodes: AllNodes, nodeId: string): boolean {
+    return !nodes.nodesInNonFirstBreakpoints.has(nodeId)
+        && !nodes.nodesInNonPrimaryVariants.has(nodeId)
+}
 // ---------------------------------------------------------------------------
 // ASSETS CHECKS (11)
 // ---------------------------------------------------------------------------
@@ -2131,6 +2224,205 @@ async function checkAltText(nodes: AllNodes): Promise<CheckResult> {
     return makeCheck(id, label, "warning", `${missing.length} of ${imageCount} images missing alt text`, missing, true)
 }
 
+async function checkLargeUncompressedAssets(nodes: AllNodes): Promise<CheckResult> {
+    const id = "large-uncompressed-assets"
+    const label = "Large Uncompressed Assets"
+
+    const IMAGE_SIZE_LIMIT_BYTES = 1024 * 1024
+    const VIDEO_SIZE_LIMIT_BYTES = 5 * 1024 * 1024
+    const IMAGE_DIMENSION_LIMIT = 4096
+
+    const flagged: Array<CheckItem> = []
+    const seenKeys = new Set<string>()
+
+    const addFlagged = (key: string, item: CheckItem): void => {
+        if (seenKeys.has(key)) return
+        seenKeys.add(key)
+        flagged.push(item)
+    }
+
+    const formatBytes = (bytes: number): string => {
+        const mb = bytes / (1024 * 1024)
+        return `${mb.toFixed(2)}MB`
+    }
+
+    for (const frame of nodes.frameNodes) {
+        const asset = getFrameBackgroundImage(frame)
+        if (!asset) continue
+        if (!isPrimaryScopedNode(nodes, frame.id)) continue
+
+        const data = await asset.getData().catch(() => null)
+        const mimeType = getMimeTypeFromUnknown(data?.mimeType ?? asset)
+        const bytes = data?.bytes instanceof Uint8Array ? data.bytes.byteLength : null
+        const isImage = mimeType !== null && mimeType.startsWith("image/")
+        const isVideo = mimeType !== null && mimeType.startsWith("video/")
+        const imageDimensions = asset.url ? await getImageDimensionsFromUrl(asset.url) : { width: null, height: null }
+
+        if (isImage && bytes !== null && bytes > IMAGE_SIZE_LIMIT_BYTES) {
+            addFlagged(
+                `frame-image-size:${frame.id}`,
+                {
+                    label: `${getNodeName(frame as AnyNode)}: image > 1MB`,
+                    nodeId: frame.id,
+                    previewUrl: asset.thumbnailUrl ?? asset.url,
+                },
+            )
+        }
+
+        if (isVideo && bytes !== null && bytes > VIDEO_SIZE_LIMIT_BYTES) {
+            addFlagged(
+                `frame-video-size:${frame.id}`,
+                {
+                    label: `${getNodeName(frame as AnyNode)}: video > 5MB`,
+                    nodeId: frame.id,
+                    previewUrl: asset.thumbnailUrl ?? asset.url,
+                },
+            )
+        }
+
+        if (isImage) {
+            const width = imageDimensions.width
+            const height = imageDimensions.height
+            if ((width !== null && width > IMAGE_DIMENSION_LIMIT) || (height !== null && height > IMAGE_DIMENSION_LIMIT)) {
+                addFlagged(
+                    `frame-image-dim:${frame.id}`,
+                    {
+                        label: `${getNodeName(frame as AnyNode)}: image > 4896px`,
+                        nodeId: frame.id,
+                        previewUrl: asset.thumbnailUrl ?? asset.url,
+                    },
+                )
+            }
+        }
+    }
+
+    for (const componentNode of nodes.componentNodes) {
+        if (!isPrimaryScopedNode(nodes, componentNode.id)) continue
+        const imageCandidates = collectImageCandidatesFromValue(componentNode)
+        const seenCandidateKeys = new Set<string>()
+
+        for (const candidate of imageCandidates) {
+            if (seenCandidateKeys.has(candidate.key)) continue
+            seenCandidateKeys.add(candidate.key)
+
+            const bytes = await getAssetBytesFromUnknown(candidate.source)
+            const mimeType = getMimeTypeFromUnknown(candidate.source)
+            const assetUrl = candidate.previewUrl
+            let dimensions = extractImageDimensionFromAssetRecord(candidate.source as Record<string, unknown>)
+            if ((dimensions.width === null || dimensions.height === null) && assetUrl) {
+                dimensions = await getImageDimensionsFromUrl(assetUrl)
+            }
+
+            if (mimeType !== null && mimeType.startsWith("image/") && bytes !== null && bytes > IMAGE_SIZE_LIMIT_BYTES) {
+                addFlagged(
+                    `component-image-size:${componentNode.id}:${candidate.key}`,
+                    {
+                        label: `${getNodeName(componentNode)}: image > 1MB`,
+                        nodeId: componentNode.id,
+                        previewUrl: assetUrl,
+                    },
+                )
+            }
+
+            if (mimeType !== null && mimeType.startsWith("video/") && bytes !== null && bytes > VIDEO_SIZE_LIMIT_BYTES) {
+                addFlagged(
+                    `component-video-size:${componentNode.id}:${candidate.key}`,
+                    {
+                        label: `${getNodeName(componentNode)}: video > 5MB`,
+                        nodeId: componentNode.id,
+                        previewUrl: assetUrl,
+                    },
+                )
+            }
+
+            if (mimeType !== null && mimeType.startsWith("image/")) {
+                const width = dimensions.width
+                const height = dimensions.height
+                if ((width !== null && width > IMAGE_DIMENSION_LIMIT) || (height !== null && height > IMAGE_DIMENSION_LIMIT)) {
+                    addFlagged(
+                        `component-image-dim:${componentNode.id}:${candidate.key}`,
+                        {
+                            label: `${getNodeName(componentNode)}: image > 4896px`,
+                            nodeId: componentNode.id,
+                            previewUrl: assetUrl,
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    try {
+        const framerAny = framer as unknown as {
+            getNodesWithType?: (type: string) => Promise<ReadonlyArray<Record<string, unknown>>>
+        }
+        const imageNodesRaw = typeof framerAny.getNodesWithType === "function"
+            ? await framerAny.getNodesWithType("ImageNode").catch(() => [])
+            : []
+
+        for (const imageNode of imageNodesRaw) {
+            const nodeId = typeof imageNode.id === "string" ? imageNode.id : null
+            if (!nodeId) continue
+            if (!isPrimaryScopedNode(nodes, nodeId)) continue
+
+            const imageSource = (imageNode.image ?? imageNode) as Record<string, unknown>
+            const bytes = await getAssetBytesFromUnknown(imageSource)
+            const mimeType = getMimeTypeFromUnknown(imageSource)
+            const assetUrl = typeof imageNode.thumbnailUrl === "string"
+                ? imageNode.thumbnailUrl
+                : (typeof imageSource.url === "string" ? imageSource.url : null)
+            let dimensions = extractImageDimensionFromAssetRecord(imageSource)
+            if ((dimensions.width === null || dimensions.height === null) && assetUrl) {
+                dimensions = await getImageDimensionsFromUrl(assetUrl)
+            }
+
+            if (mimeType !== null && mimeType.startsWith("image/") && bytes !== null && bytes > IMAGE_SIZE_LIMIT_BYTES) {
+                addFlagged(
+                    `image-node-size:${nodeId}`,
+                    {
+                        label: `${getNodeName(imageNode as unknown as AnyNode)}: image > 1MB`,
+                        nodeId,
+                        previewUrl: assetUrl,
+                    },
+                )
+            }
+
+            if (mimeType !== null && mimeType.startsWith("video/") && bytes !== null && bytes > VIDEO_SIZE_LIMIT_BYTES) {
+                addFlagged(
+                    `image-node-video-size:${nodeId}`,
+                    {
+                        label: `${getNodeName(imageNode as unknown as AnyNode)}: video > 5MB`,
+                        nodeId,
+                        previewUrl: assetUrl,
+                    },
+                )
+            }
+
+            if (mimeType !== null && mimeType.startsWith("image/")) {
+                const width = dimensions.width
+                const height = dimensions.height
+                if ((width !== null && width > IMAGE_DIMENSION_LIMIT) || (height !== null && height > IMAGE_DIMENSION_LIMIT)) {
+                    addFlagged(
+                        `image-node-dim:${nodeId}`,
+                        {
+                            label: `${getNodeName(imageNode as unknown as AnyNode)}: image > 4896px`,
+                            nodeId,
+                            previewUrl: assetUrl,
+                        },
+                    )
+                }
+            }
+        }
+    } catch {
+        // Ignore optional ImageNode API failures and keep primary node coverage.
+    }
+
+    if (flagged.length === 0) {
+        return makeCheck(id, label, "pass", "No oversized image/video assets found", [], true)
+    }
+    return makeCheck(id, label, "warning", `${flagged.length} oversized asset(s) found`, flagged, true)
+}
+
 async function checkRepetitiveText(nodes: AllNodes): Promise<CheckResult> {
     const id = "placeholder-text"
     const label = "Repetitive Text"
@@ -2198,6 +2490,71 @@ async function checkRepetitiveText(nodes: AllNodes): Promise<CheckResult> {
         return makeCheck(id, label, "pass", "No repetitive text found", [], true)
     }
     return makeCheck(id, label, "warning", `${found.length} layers contain repetitive text — may be placeholder content`, found, true)
+}
+
+async function checkLoremIpsum(nodes: AllNodes): Promise<CheckResult> {
+    const id = "lorem-ipsum"
+    const label = "Lorem Ipsum Check"
+
+    const loremPhrasePatterns = [
+        /\blorem\s+ipsum\b/i,
+        /\bdolor\s+sit\s+amet\b/i,
+        /\bconsectetur\s+adipiscing\b/i,
+        /\bsed\s+do\s+eiusmod\b/i,
+        /\but\s+labore\s+et\s+dolore\b/i,
+        /\bmagna\s+aliqua\b/i,
+    ]
+
+    const loremWordSet = new Set([
+        "lorem", "ipsum", "dolor", "amet", "consectetur", "adipiscing", "elit", "eiusmod", "tempor",
+        "incididunt", "labore", "dolore", "magna", "aliqua", "enim", "veniam", "quis", "nostrud",
+        "exercitation", "ullamco", "laboris", "nisi", "aliquip", "commodo", "consequat", "duis",
+        "aute", "irure", "reprehenderit", "voluptate", "velit", "esse", "cillum", "fugiat", "nulla",
+        "pariatur", "excepteur", "sint", "occaecat", "cupidatat", "proident", "sunt", "culpa", "qui",
+        "officia", "deserunt", "mollit", "anim", "laborum", "phasellus", "fermentum", "vehicula",
+        "placerat", "curabitur", "fringilla", "vulputate", "bibendum", "tincidunt", "hendrerit",
+        "pellentesque", "habitant", "tristique", "senectus", "netus", "malesuada", "egestas", "integer",
+        "sagittis", "facilisi", "nibh", "mattis", "rhoncus", "porttitor", "ultricies", "convallis",
+        "primis", "faucibus", "ornare", "elementum", "laoreet", "suspendisse", "pulvinar", "sollicitudin",
+        "iaculis", "lobortis", "orci", "massa", "justo", "lectus", "viverra", "vitae", "accumsan",
+        "erat", "dictum", "morbi", "maecenas", "tellus", "vulputat",
+    ])
+
+    const flagged: Array<CheckItem> = []
+    const seenNodeIds = new Set<string>()
+
+    const tokenize = (text: string): ReadonlyArray<string> => {
+        return text
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .map((token) => token.trim())
+            .filter((token) => token.length > 0)
+    }
+
+    for (const node of nodes.textNodes) {
+        const nodeId = node.id
+        if (!isPrimaryScopedNode(nodes, nodeId)) continue
+        if (seenNodeIds.has(nodeId)) continue
+        seenNodeIds.add(nodeId)
+
+        const nodeText = (await getNodeText(node)).trim()
+        if (nodeText.length === 0) continue
+
+        const lowerCombined = nodeText.toLowerCase()
+        const phraseMatch = loremPhrasePatterns.find((pattern) => pattern.test(lowerCombined))
+        const tokenMatch = tokenize(nodeText).find((token) => loremWordSet.has(token))
+
+        if (!phraseMatch && !tokenMatch) continue
+
+        const preview = nodeText.length > 80 ? `${nodeText.slice(0, 80)}...` : nodeText
+        flagged.push({ label: preview, nodeId })
+    }
+
+    if (flagged.length === 0) {
+        return makeCheck(id, label, "pass", "No lorem ipsum placeholder content found", [], true)
+    }
+
+    return makeCheck(id, label, "fail", `${flagged.length} text layer(s) contain lorem placeholder content`, flagged, true)
 }
 
 async function checkComponentFileStructure(_nodes: AllNodes): Promise<CheckResult> {
@@ -2502,8 +2859,19 @@ async function checkCmsFieldNamingConvention(nodes: AllNodes): Promise<CheckResu
 }
 
 function formatCmsHeading(value: unknown): string | null {
+    const normalizeText = (input: string): string => {
+        return input
+            .replace(/<[^>]*>/g, " ")
+            .replace(/&nbsp;/gi, " ")
+            .replace(/&#160;/gi, " ")
+            .replace(/\u00A0/g, " ")
+            .replace(/[\u200B-\u200D\uFEFF]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+    }
+
     if (typeof value === "string") {
-        const trimmed = value.trim()
+        const trimmed = normalizeText(value)
         return trimmed.length > 0 ? trimmed : null
     }
 
@@ -2585,12 +2953,33 @@ function normalizeCmsFieldValue(value: unknown): unknown {
 }
 
 function hasMeaningfulCmsValue(value: unknown): boolean {
+    const normalizeText = (input: string): string => {
+        return input
+            .replace(/<[^>]*>/g, " ")
+            .replace(/&nbsp;/gi, " ")
+            .replace(/&#160;/gi, " ")
+            .replace(/\u00A0/g, " ")
+            .replace(/[\u200B-\u200D\uFEFF]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+    }
+
     if (value === null || value === undefined) return false
-    if (typeof value === "string") return value.trim().length > 0
+    if (typeof value === "string") return normalizeText(value).length > 0
     if (typeof value === "number" || typeof value === "boolean") return true
     if (Array.isArray(value)) return value.some((entry) => hasMeaningfulCmsValue(entry))
     if (typeof value === "object") {
         const record = value as Record<string, unknown>
+
+        for (const textKey of ["html", "text", "plainText", "markdown", "content"]) {
+            if (!(textKey in record)) continue
+            const textCandidate = record[textKey]
+            if (typeof textCandidate === "string") {
+                if (normalizeText(textCandidate).length > 0) return true
+                continue
+            }
+            if (hasMeaningfulCmsValue(textCandidate)) return true
+        }
 
         if ("value" in record) {
             return hasMeaningfulCmsValue(record.value)
@@ -2761,6 +3150,187 @@ async function checkDuplicateCmsContent(nodes: AllNodes): Promise<CheckResult> {
         cmsItems,
         true,
     )
+}
+
+async function checkEmptyCmsFields(nodes: AllNodes): Promise<CheckResult> {
+    const id = "empty-cms-fields"
+    const label = "Empty CMS Fields"
+
+    if (nodes.collections.length === 0) {
+        return makeCheck(id, label, "skip", "No CMS collections found — skipped", [], true)
+    }
+
+    const flagged: Array<CheckItem> = []
+
+    const normalizeKey = (value: string): string => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "")
+
+    const makeFieldAliasKeys = (field: CollectionField): ReadonlyArray<string> => {
+        const aliases = new Set<string>()
+        const rawName = field.name.trim()
+        const rawId = field.id.trim()
+        if (rawId.length > 0) aliases.add(rawId)
+        if (rawName.length > 0) aliases.add(rawName)
+        if (rawName.length > 0) aliases.add(rawName.replace(/\s+/g, "_"))
+        if (rawName.length > 0) aliases.add(rawName.replace(/\s+/g, "-"))
+        const normalizedName = normalizeKey(rawName)
+        const normalizedId = normalizeKey(rawId)
+        if (normalizedName.length > 0) aliases.add(normalizedName)
+        if (normalizedId.length > 0) aliases.add(normalizedId)
+        return Array.from(aliases)
+    }
+
+    const getFieldValue = (
+        item: CollectionItem,
+        field: CollectionField,
+        normalizedFieldDataKeyMap: ReadonlyMap<string, string>,
+    ): { exists: boolean; value: unknown } => {
+        if (Object.prototype.hasOwnProperty.call(item.fieldData, field.id)) {
+            return { exists: true, value: item.fieldData[field.id] }
+        }
+
+        for (const alias of makeFieldAliasKeys(field)) {
+            if (Object.prototype.hasOwnProperty.call(item.fieldData, alias)) {
+                return { exists: true, value: item.fieldData[alias] }
+            }
+            const normalizedAlias = normalizeKey(alias)
+            if (normalizedAlias.length === 0) continue
+            const matchedKey = normalizedFieldDataKeyMap.get(normalizedAlias)
+            if (matchedKey && Object.prototype.hasOwnProperty.call(item.fieldData, matchedKey)) {
+                return { exists: true, value: item.fieldData[matchedKey] }
+            }
+        }
+
+        return { exists: false, value: null }
+    }
+
+    const pushedFlagKeys = new Set<string>()
+    const cleanTagText = (value: string): string => {
+        const cleaned = value
+            .replace(/<[^>]*>/g, " ")
+            .replace(/&nbsp;/gi, " ")
+            .replace(/&#160;/gi, " ")
+            .replace(/\u00A0/g, " ")
+            .replace(/[\u200B-\u200D\uFEFF]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+        return cleaned.length > 0 ? cleaned : "Untitled CMS Item"
+    }
+
+    const categorizeField = (fieldName: string): string => {
+        const normalized = fieldName.trim().toLowerCase()
+        if (/(^|\b)(title|name|heading)(\b|$)/.test(normalized)) return "Title"
+        if (/(^|\b)slug(\b|$)/.test(normalized)) return "Slug"
+        if (/(^|\b)(date|time|published|publish|created|updated)(\b|$)/.test(normalized)) return "Date"
+        if (/(^|\b)(image|images|img|thumbnail|thumb|hero|cover|photo|media|gallery|icon|banner)(\b|$)/.test(normalized)) return "Image"
+        if (/(^|\b)(categor|tag|taxonomy|topic)(\b|$)/.test(normalized)) return "Categories"
+        if (/(^|\b)(content|body|rich\s*text|description|summary|excerpt)(\b|$)/.test(normalized)) return "Content"
+        return "Field"
+    }
+
+    const issueLabelForField = (fieldName: string): string => {
+        const category = categorizeField(fieldName)
+        if (category === "Field") {
+            const fallback = fieldName.trim().toLowerCase()
+            return fallback.length > 0 ? fallback : "field"
+        }
+        return category.toLowerCase()
+    }
+
+    const pushFlag = (collectionName: string, heading: string, fieldName: string, reason: "missing" | "empty", nodeId: string): void => {
+        const issueCategory = categorizeField(fieldName)
+        const cleanHeading = cleanTagText(heading)
+        const key = `${collectionName}|${cleanHeading}|${fieldName}|${issueCategory}|${reason}|${nodeId}`
+        if (pushedFlagKeys.has(key)) return
+        pushedFlagKeys.add(key)
+        flagged.push({
+            label: issueLabelForField(fieldName),
+            nodeId,
+            groupLabel: collectionName,
+            pageLabel: collectionName,
+        })
+    }
+
+    for (const collection of nodes.collections) {
+        let items: ReadonlyArray<CollectionItem> = []
+        let fields: ReadonlyArray<CollectionField> = []
+
+        try {
+            items = await collection.getItems()
+        } catch {
+            flagged.push({ label: `${collection.name}: unable to read items`, nodeId: null })
+            continue
+        }
+
+        try {
+            fields = await collection.getFields()
+        } catch {
+            flagged.push({ label: `${collection.name}: unable to read fields`, nodeId: null })
+            continue
+        }
+
+        for (const item of items) {
+            const heading = getCmsItemHeading(item, fields)
+            const normalizedFieldDataKeyMap = new Map<string, string>()
+            for (const key of Object.keys(item.fieldData)) {
+                const normalized = normalizeKey(key)
+                if (normalized.length > 0 && !normalizedFieldDataKeyMap.has(normalized)) {
+                    normalizedFieldDataKeyMap.set(normalized, key)
+                }
+            }
+
+            const checkedDataKeys = new Set<string>()
+
+            for (const field of fields) {
+                const resolved = getFieldValue(item, field, normalizedFieldDataKeyMap)
+                if (!resolved.exists) {
+                    pushFlag(collection.name, heading, field.name, "missing", item.nodeId)
+                    continue
+                }
+
+                for (const alias of makeFieldAliasKeys(field)) {
+                    if (Object.prototype.hasOwnProperty.call(item.fieldData, alias)) checkedDataKeys.add(alias)
+                    const normalizedAlias = normalizeKey(alias)
+                    const mappedKey = normalizedFieldDataKeyMap.get(normalizedAlias)
+                    if (mappedKey) checkedDataKeys.add(mappedKey)
+                }
+
+                const fieldValue = resolved.value
+                if (!hasMeaningfulCmsValue(fieldValue)) {
+                    pushFlag(collection.name, heading, field.name, "empty", item.nodeId)
+                }
+            }
+
+            const slugFieldName = typeof collection.slugFieldName === "string" ? collection.slugFieldName.trim() : ""
+            const slugFieldNormalized = normalizeKey(slugFieldName)
+            const slugFieldFromData = slugFieldNormalized.length > 0 ? normalizedFieldDataKeyMap.get(slugFieldNormalized) : null
+            checkedDataKeys.add("slug")
+            if (slugFieldFromData) checkedDataKeys.add(slugFieldFromData)
+            if (slugFieldName.length > 0) checkedDataKeys.add(slugFieldName)
+
+            const slugFieldMissing = item.slug.trim().length === 0
+                && (!slugFieldFromData || !hasMeaningfulCmsValue(item.fieldData[slugFieldFromData]))
+
+            if (slugFieldMissing) {
+                pushFlag(collection.name, heading, slugFieldName.length > 0 ? slugFieldName : "slug", "empty", item.nodeId)
+            }
+
+            // Catch any additional item field-data columns that exist on the item but are not
+            // represented in getFields() (or use alternate key names). If those values are empty,
+            // they should still be flagged.
+            for (const [dataKey, dataValue] of Object.entries(item.fieldData)) {
+                if (checkedDataKeys.has(dataKey)) continue
+                if (!hasMeaningfulCmsValue(dataValue)) {
+                    pushFlag(collection.name, heading, dataKey, "empty", item.nodeId)
+                }
+            }
+        }
+    }
+
+    if (flagged.length === 0) {
+        return makeCheck(id, label, "pass", "No empty CMS fields found", [], true)
+    }
+
+    return makeCheck(id, label, "warning", `${flagged.length} empty CMS field(s) found`, flagged, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -4167,17 +4737,6 @@ function checkNaming(nodes: AllNodes): CheckResult {
     return makeCheck(id, label, "warning", `${flagged.length} layer(s) still use default Framer names (Frame / Stack / Grid)`, flagged, true)
 }
 
-function checkComponentUpToDate(): CheckResult {
-    return makeCheck(
-        "component-up-to-date",
-        "Component Up to Date",
-        "warning",
-        "Automatic update-state detection is limited by Framer Plugin API. External components are still detected via insertURL and included in asset checks.",
-        [],
-        true,
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Score calculation
 // ---------------------------------------------------------------------------
@@ -5506,7 +6065,7 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
 async function runAudit(onProgress?: (done: number, total: number) => void, enablePageSpeed: boolean = true): Promise<AuditReport> {
     const nodes = await fetchAllNodes()
 
-    const TOTAL = 28
+    const TOTAL = 32
     let completed = 0
 
     function track<T>(p: Promise<T> | T): Promise<T> {
@@ -5520,11 +6079,12 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
     const [
         // Assets
         altText,
+        largeUncompressedAssets,
         componentFileStructure,
-        componentUpToDate,
         unusedAssets,
         // Text
         repetitiveText,
+        loremIpsum,
         defaultFonts,
         textLegibility,
         consistentTextStyles,
@@ -5553,14 +6113,16 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         contactFormSendTo,
         // CMS
         duplicateCms,
+        emptyCmsFields,
         // Performance
         pageSpeed,
     ] = await Promise.all([
         track(checkAltText(nodes)),
+        track(checkLargeUncompressedAssets(nodes)),
         track(checkComponentFileStructure(nodes)),
-        track(checkComponentUpToDate()),
         track(checkUnusedAssets(nodes)),
         track(checkRepetitiveText(nodes)),
+        track(checkLoremIpsum(nodes)),
         track(checkDefaultFonts(nodes)),
         track(checkTextLegibility(nodes)),
         track(checkConsistentTextStyles(nodes)),
@@ -5584,6 +6146,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         track(checkActiveLinks(nodes)),
         track(checkContactFormSendTo(nodes)),
         track(checkDuplicateCmsContent(nodes)),
+        track(checkEmptyCmsFields(nodes)),
         enablePageSpeed ? track(checkGooglePageSpeed(nodes)) : track(skipCheck("google-pagespeed", "Google PageSpeed", "Check disabled")),
     ])
 
@@ -5591,12 +6154,12 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         {
             id: "assets",
             label: "Assets",
-            checks: [componentFileStructure, componentUpToDate, unusedAssets],
+            checks: [largeUncompressedAssets, componentFileStructure, unusedAssets],
         },
         {
             id: "text",
             label: "Text",
-            checks: [repetitiveText, defaultFonts, textLegibility, consistentTextStyles, textStyles],
+            checks: [repetitiveText, loremIpsum, defaultFonts, textLegibility, consistentTextStyles, textStyles],
         },
         {
             id: "design",
@@ -5621,7 +6184,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         {
             id: "cms",
             label: "CMS",
-            checks: [duplicateCms],
+            checks: [duplicateCms, emptyCmsFields],
         },
         {
             id: "performance",
@@ -5649,10 +6212,11 @@ async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = t
 
     switch (checkId) {
         case "alt-text": return checkAltText(nodes)
+        case "large-uncompressed-assets": return checkLargeUncompressedAssets(nodes)
         case "component-file-structure": return checkComponentFileStructure(nodes)
-        case "component-up-to-date": return checkComponentUpToDate()
         case "unused-assets": return checkUnusedAssets(nodes)
         case "placeholder-text": return checkRepetitiveText(nodes)
+        case "lorem-ipsum": return checkLoremIpsum(nodes)
         case "default-fonts": return checkDefaultFonts(nodes)
         case "text-legibility": return checkTextLegibility(nodes)
         case "consistent-text-styles": return checkConsistentTextStyles(nodes)
@@ -5676,6 +6240,7 @@ async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = t
         case "active-links": return checkActiveLinks(nodes)
         case "contact-form": return checkContactFormSendTo(nodes)
         case "duplicate-cms-content": return checkDuplicateCmsContent(nodes)
+        case "empty-cms-fields": return checkEmptyCmsFields(nodes)
         case "google-pagespeed":
             return enablePageSpeed
                 ? checkGooglePageSpeed(nodes)

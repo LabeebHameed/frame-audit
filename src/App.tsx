@@ -2,8 +2,9 @@ import { framer, isFrameNode } from "framer-plugin"
 import type { CanvasNode } from "framer-plugin"
 import React, { useState, useEffect, useCallback, memo, useRef } from "react"
 import { THEME_COLORS, type ThemeMode } from "./theme"
-import type { AuditReport, CheckResult, CheckCategory, CheckItem, PageSpeedData, PageSpeedStrategyData, PaddingSection, PaddingMode, PaddingReport } from "./types"
+import type { AuditReport, CheckResult, CheckCategory, CheckItem, PageSpeedData, PageSpeedStrategyData, PaddingBreakpointConfig, PaddingSection, PaddingReport } from "./types"
 import { runAudit, runRequirementCheck, calculateScore, checkPaddingAndGap } from "./services/checkers"
+import DesignPanel from "./DesignPanel"
 import "./App.css"
 
 framer.showUI({ position: "top right", width: 320, height: 580 })
@@ -126,19 +127,23 @@ function SpinnerIcon(props: { color: string }): React.ReactElement {
     )
 }
 
-function LightningIcon(props: { color: string; size?: number }): React.ReactElement {
-    const s = props.size ?? 16
-    return (
-        <svg width={s} height={s} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-            <path d="M9 1L3 9H8L7 15L13 7H8L9 1Z" fill={props.color} />
-        </svg>
-    )
-}
-
 function ChevronIcon(props: { open: boolean; color: string }): React.ReactElement {
     return (
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0, transition: "transform 0.15s ease", transform: props.open ? "rotate(90deg)" : "rotate(0deg)" }}>
             <path d="M4.5 3L7.5 6L4.5 9" stroke={props.color} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    )
+}
+
+function LockIcon(props: { color: string }): React.ReactElement {
+    return (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+            <path
+                fill={props.color}
+                fillRule="evenodd"
+                d="M5.25 10.055V8a6.75 6.75 0 0 1 13.5 0v2.055c1.115.083 1.84.293 2.371.824C22 11.757 22 13.172 22 16s0 4.243-.879 5.121C20.243 22 18.828 22 16 22H8c-2.828 0-4.243 0-5.121-.879C2 20.243 2 18.828 2 16s0-4.243.879-5.121c.53-.531 1.256-.741 2.371-.824M6.75 8a5.25 5.25 0 0 1 10.5 0v2.004Q16.676 9.999 16 10H8q-.677-.001-1.25.004z"
+                clipRule="evenodd"
+            />
         </svg>
     )
 }
@@ -208,9 +213,17 @@ function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep:
             whatItMeans: "These images are missing alt text.",
             nextStep: "Add clear alt text that describes the image purpose or content.",
         },
+        "large-uncompressed-assets": {
+            whatItMeans: "Some assets are too large or image dimensions are too big.",
+            nextStep: "Compress oversized images/videos and keep image width/height at or below 4096px.",
+        },
         "placeholder-text": {
             whatItMeans: "These text layers still use placeholder copy.",
             nextStep: "Replace the placeholder with the final text you want published.",
+        },
+        "lorem-ipsum": {
+            whatItMeans: "Some text layers still contain lorem ipsum placeholder words.",
+            nextStep: "Replace every flagged placeholder phrase or token with final content.",
         },
         "component-file-structure": {
             whatItMeans: "These components or frames are not organized in the expected file structure.",
@@ -232,17 +245,13 @@ function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep:
             whatItMeans: "These text layers are too small to read comfortably.",
             nextStep: "Increase the font size to at least 12px.",
         },
-        "cms-usage": {
-            whatItMeans: "These collections are empty or not being used as expected.",
-            nextStep: "Add items to the collection or remove the collection if it is no longer needed.",
-        },
-        "cms-field-naming": {
-            whatItMeans: "These CMS fields have naming issues.",
-            nextStep: "Rename the fields so they are clear, consistent, and free of extra spaces.",
-        },
         "duplicate-cms-content": {
             whatItMeans: "These CMS items have identical fieldData.",
             nextStep: "Remove or rewrite duplicate items so each CMS page has unique content.",
+        },
+        "empty-cms-fields": {
+            whatItMeans: "Some CMS items are missing required field values.",
+            nextStep: "Fill every empty CMS field in the flagged items.",
         },
         "mailto-tel-links": {
             whatItMeans: "These links are missing the expected mailto/tel format.",
@@ -294,7 +303,7 @@ function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep:
         },
         "page-settings": {
             whatItMeans: "Published site metadata is incomplete.",
-            nextStep: "Set favicon, platform icons, social preview (title/description/image), and SEO title/description in Site Settings, then republish.",
+            nextStep: "Set favicon, social preview, site title, and site description in Site Settings, then republish.",
         },
         "naming": {
             whatItMeans: "These frames still use default or unclear names.",
@@ -382,7 +391,7 @@ function StatsStrip(props: { report: AuditReport; theme: ThemeMode }): React.Rea
 const CheckRow = memo(function CheckRow(props: {
     check: CheckResult
     theme: ThemeMode
-    onClick: (() => void) | null
+    onClick: (() => void) | null | undefined
 }): React.ReactElement {
     const colors = THEME_COLORS[props.theme]
     const { status } = props.check
@@ -393,7 +402,7 @@ const CheckRow = memo(function CheckRow(props: {
 
     return (
         <div
-            onClick={isClickable ? props.onClick : undefined}
+            onClick={isClickable ? props.onClick ?? undefined : undefined}
             style={{
                 display: "flex",
                 alignItems: "center",
@@ -538,9 +547,15 @@ type ComponentNodeWithVariables = {
 }
 
 type ImageVariableEditable = {
+    readonly id?: string
     readonly type?: unknown
     readonly defaultValue?: unknown
     readonly setAttributes?: ((attrs: { defaultValue: ImageAssetEditable }) => Promise<unknown>)
+}
+
+type ImageControlValue = {
+    readonly type?: unknown
+    readonly value?: unknown
 }
 
 function scoreColor(score: number | null): string {
@@ -782,6 +797,7 @@ function DetailView(props: {
 
     const [componentsOpen, setComponentsOpen] = useState(true)
     const [framesOpen, setFramesOpen] = useState(true)
+    const [textStylesOpen, setTextStylesOpen] = useState(true)
     const [componentLockedOpen, setComponentLockedOpen] = useState(true)
     const [componentUnlockedOpen, setComponentUnlockedOpen] = useState(true)
     const [frameLockedOpen, setFrameLockedOpen] = useState(true)
@@ -790,11 +806,11 @@ function DetailView(props: {
     const [itemGroupByNodeId, setItemGroupByNodeId] = useState<Map<string, "component" | "frame">>(new Map())
     const [itemLockByNodeId, setItemLockByNodeId] = useState<Map<string, boolean>>(new Map())
     const [groupingReady, setGroupingReady] = useState(false)
-    const isCmsPagesCheck = props.check.id === "duplicate-cms-content"
+    const isCmsPagesCheck = props.check.id === "duplicate-cms-content" || props.check.id === "empty-cms-fields"
 
     const getCompactItemLabel = useCallback((item: CheckItem): string => {
         // Keep full text for checks where the value details are useful.
-        const fullLabelChecks = ["responsive-layout", "auto-height", "duplicate-cms-content", "cms-field-naming", "cms-usage", "placeholder-text"]
+        const fullLabelChecks = ["responsive-layout", "auto-height", "duplicate-cms-content", "empty-cms-fields", "placeholder-text", "lorem-ipsum", "large-uncompressed-assets"]
         if (fullLabelChecks.includes(props.check.id)) {
             return item.label
         }
@@ -956,7 +972,7 @@ function DetailView(props: {
             return
         }
 
-        const collectionNames = Array.from(new Set(props.check.items.map((item) => item.badge?.trim() || "CMS Collection")))
+        const collectionNames = Array.from(new Set(props.check.items.map((item) => item.groupLabel?.trim() || "CMS Collection")))
         setCmsCollectionOpenByName((previous) => {
             const next = new Map(previous)
             let didChange = false
@@ -1018,7 +1034,8 @@ function DetailView(props: {
                 )
             }
 
-    const getItemGroup = useCallback((item: CheckItem): "component" | "frame" => {
+    const getItemGroup = useCallback((item: CheckItem): "component" | "frame" | "text-style" => {
+        if (item.nodeId === null && item.label.startsWith("Text style \"")) return "text-style"
         if (item.nodeId !== null) {
             const grouped = itemGroupByNodeId.get(item.nodeId)
             if (grouped) return grouped
@@ -1086,6 +1103,126 @@ function DetailView(props: {
         })
     }, [getImageAssetId])
 
+    const collectEditableImageVariablesFromValue = useCallback((value: unknown): ImageVariableEditable[] => {
+        if (!value || typeof value !== "object") return []
+
+        const found: ImageVariableEditable[] = []
+        const seenObjects = new WeakSet<object>()
+        const seenVariableIds = new Set<string>()
+
+        const visit = (candidate: unknown, depth: number): void => {
+            if (!candidate || typeof candidate !== "object" || depth > 8) return
+
+            const objectCandidate = candidate as object
+            if (seenObjects.has(objectCandidate)) return
+            seenObjects.add(objectCandidate)
+
+            const maybeVariable = candidate as ImageVariableEditable
+            const defaultValue = maybeVariable.defaultValue as ImageAssetEditable | undefined
+            const canEditImageVariable = maybeVariable.type === "image"
+                && typeof maybeVariable.setAttributes === "function"
+                && !!defaultValue
+                && typeof defaultValue.cloneWithAttributes === "function"
+
+            if (canEditImageVariable) {
+                const variableId = typeof maybeVariable.id === "string" ? maybeVariable.id : null
+                if (!variableId || !seenVariableIds.has(variableId)) {
+                    if (variableId) seenVariableIds.add(variableId)
+                    found.push(maybeVariable)
+                }
+            }
+
+            if (Array.isArray(candidate)) {
+                for (const entry of candidate) visit(entry, depth + 1)
+                return
+            }
+
+            for (const nested of Object.values(candidate as Record<string, unknown>)) {
+                visit(nested, depth + 1)
+            }
+        }
+
+        visit(value, 0)
+        return found
+    }, [])
+
+    const saveAltTextOnComponentInstanceImageVariables = useCallback(async (componentNode: unknown, newAltText: string): Promise<"updated" | "no-match"> => {
+        if (!componentNode || typeof componentNode !== "object") return "no-match"
+
+        const componentRecord = componentNode as Record<string, unknown>
+        const variableCandidates = collectEditableImageVariablesFromValue([
+            componentRecord.typedControls,
+            componentRecord.controls,
+            componentRecord.props,
+            componentRecord.properties,
+            componentRecord.componentProperties,
+        ])
+        if (variableCandidates.length === 0) return "no-match"
+
+        let updatedCount = 0
+        for (const variable of variableCandidates) {
+            const defaultValue = variable.defaultValue as ImageAssetEditable | undefined
+            if (!defaultValue || typeof defaultValue.cloneWithAttributes !== "function") continue
+
+            const updated = defaultValue.cloneWithAttributes({ altText: newAltText })
+            await variable.setAttributes?.({ defaultValue: updated })
+            updatedCount += 1
+        }
+
+        return updatedCount > 0 ? "updated" : "no-match"
+    }, [collectEditableImageVariablesFromValue])
+
+    const saveAltTextOnComponentInstanceImageControls = useCallback(async (componentNode: unknown, newAltText: string): Promise<"updated" | "no-match"> => {
+        if (!componentNode || typeof componentNode !== "object") return "no-match"
+
+        const nodeRecord = componentNode as Record<string, unknown>
+        const setAttributes = nodeRecord.setAttributes
+        if (typeof setAttributes !== "function") return "no-match"
+
+        const controls = (nodeRecord.controls && typeof nodeRecord.controls === "object")
+            ? (nodeRecord.controls as Record<string, unknown>)
+            : {}
+        const typedControls = (nodeRecord.typedControls && typeof nodeRecord.typedControls === "object")
+            ? (nodeRecord.typedControls as Record<string, unknown>)
+            : {}
+
+        const updatedControls: Record<string, unknown> = { ...controls }
+        let updatedCount = 0
+
+        for (const [key, typed] of Object.entries(typedControls)) {
+            const typedRecord = typed as ImageControlValue | undefined
+            const typedType = typeof typedRecord?.type === "string" ? typedRecord.type : ""
+            if (typedType !== "image") continue
+
+            const candidateFromTyped = typedRecord?.value as ImageAssetEditable | undefined
+            const candidateFromControls = controls[key] as ImageAssetEditable | undefined
+            const imageValue = (candidateFromTyped && typeof candidateFromTyped.cloneWithAttributes === "function")
+                ? candidateFromTyped
+                : ((candidateFromControls && typeof candidateFromControls.cloneWithAttributes === "function") ? candidateFromControls : null)
+            if (!imageValue) continue
+
+            updatedControls[key] = imageValue.cloneWithAttributes({ altText: newAltText })
+            updatedCount += 1
+        }
+
+        // Some runtimes expose image control values only in controls.
+        for (const [key, value] of Object.entries(controls)) {
+            if (key in updatedControls && updatedControls[key] !== controls[key]) continue
+            const imageValue = value as ImageAssetEditable | undefined
+            if (!imageValue || typeof imageValue.cloneWithAttributes !== "function") continue
+            updatedControls[key] = imageValue.cloneWithAttributes({ altText: newAltText })
+            updatedCount += 1
+        }
+
+        if (updatedCount === 0) return "no-match"
+
+        await (setAttributes as (attrs: Record<string, unknown>) => Promise<unknown>)({
+            controls: updatedControls,
+        })
+
+        return "updated"
+    }, [])
+
     const saveAltTextOnImageVariable = useCallback(async (frameNode: unknown, updated: ImageAssetEditable): Promise<"updated" | "no-match" | "not-component"> => {
         const ownerComponent = await findAncestorComponentNode(frameNode)
         if (!ownerComponent) return "not-component"
@@ -1116,48 +1253,73 @@ function DetailView(props: {
             return next
         })
         try {
-            const frameNodes = await framer.getNodesWithType("FrameNode")
-            const frameNode = frameNodes.find((f) => f.id === nodeId) as unknown
-            if (!frameNode || typeof frameNode !== "object") return
+            const framerAny = framer as unknown as { getNode?: (id: string) => Promise<unknown>; setAttributes?: (id: string, attrs: Record<string, unknown>) => Promise<void> }
+            const node = typeof framerAny.getNode === "function"
+                ? await framerAny.getNode(nodeId).catch(() => null)
+                : null
 
-            const frame = frameNode as Record<string, unknown>
-
-            const image = frame.backgroundImage as ImageAssetEditable | null
-            if (!image || typeof image.cloneWithAttributes !== "function") return
-
-            const updated = image.cloneWithAttributes({ altText: newAltText })
-
-            const variableSaveResult = await saveAltTextOnImageVariable(frameNode, updated)
-            if (variableSaveResult === "updated") {
-                setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
-                return
-            }
-
-            if (variableSaveResult === "no-match") {
+            if (!node || typeof node !== "object") {
                 setSaveErrorsByNodeId((prev) => {
                     const next = new Map(prev)
-                    next.set(
-                        nodeId,
-                        "Image is linked to a variable, change alt-text manually.",
-                    )
+                    next.set(nodeId, "Could not locate this node in Framer.")
                     return next
                 })
                 return
             }
 
-            const framerAny = framer as unknown as Record<string, unknown>
-            if (typeof framerAny.setAttributes === "function") {
-                await (framerAny.setAttributes as (id: string, attrs: Record<string, unknown>) => Promise<void>)(
-                    nodeId,
-                    { backgroundImage: updated },
-                )
+            const nodeRecord = node as Record<string, unknown>
+            const frameImage = nodeRecord.backgroundImage as ImageAssetEditable | null
+
+            if (frameImage && typeof frameImage.cloneWithAttributes === "function") {
+                const updated = frameImage.cloneWithAttributes({ altText: newAltText })
+
+                const variableSaveResult = await saveAltTextOnImageVariable(node, updated)
+                if (variableSaveResult === "updated") {
+                    setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+                    return
+                }
+
+                if (typeof framerAny.setAttributes === "function") {
+                    await framerAny.setAttributes(nodeId, { backgroundImage: updated })
+                }
+
+                setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+                setSaveErrorsByNodeId((prev) => {
+                    if (!prev.has(nodeId)) return prev
+                    const next = new Map(prev)
+                    next.delete(nodeId)
+                    return next
+                })
+                return
             }
 
-            setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+            const componentVariableSave = await saveAltTextOnComponentInstanceImageVariables(node, newAltText)
+            if (componentVariableSave === "updated") {
+                setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+                setSaveErrorsByNodeId((prev) => {
+                    if (!prev.has(nodeId)) return prev
+                    const next = new Map(prev)
+                    next.delete(nodeId)
+                    return next
+                })
+                return
+            }
+
+            const componentControlSave = await saveAltTextOnComponentInstanceImageControls(node, newAltText)
+            if (componentControlSave === "updated") {
+                setSavedNodes((prev) => { const n = new Set(prev); n.add(nodeId); return n })
+                setSaveErrorsByNodeId((prev) => {
+                    if (!prev.has(nodeId)) return prev
+                    const next = new Map(prev)
+                    next.delete(nodeId)
+                    return next
+                })
+                return
+            }
+
             setSaveErrorsByNodeId((prev) => {
-                if (!prev.has(nodeId)) return prev
                 const next = new Map(prev)
-                next.delete(nodeId)
+                next.set(nodeId, "No editable image variable was found for this item.")
                 return next
             })
         } catch {
@@ -1169,7 +1331,7 @@ function DetailView(props: {
         } finally {
             setSavingNodes((prev) => { const n = new Set(prev); n.delete(nodeId); return n })
         }
-    }, [altInputs, saveAltTextOnImageVariable])
+    }, [altInputs, saveAltTextOnComponentInstanceImageControls, saveAltTextOnComponentInstanceImageVariables, saveAltTextOnImageVariable])
 
     const renderItemMap = (entries: {item: CheckItem, index: number}[]) => (
         <div style={{ display: "flex", flexDirection: "column", gap: 2, width: "100%" }}>
@@ -1371,7 +1533,7 @@ function DetailView(props: {
                                 {item.badge}
                             </span>
                         )}
-                        {item.pageLabel && (getItemGroup(item) === "frame" || props.check.id === "breakpoint-widths") && (
+                        {item.pageLabel && (getItemGroup(item) === "frame" || props.check.id === "breakpoint-widths" || isCmsPagesCheck) && (
                             <span
                                 style={{
                                     fontSize: 10,
@@ -1450,6 +1612,7 @@ function DetailView(props: {
         })
     }, [])
 
+    const textStyleEntries = filteredEntries.filter((e) => getItemGroup(e.item) === "text-style")
     const componentEntries = filteredEntries.filter((e) => getItemGroup(e.item) === "component")
     const frameEntries = filteredEntries.filter((e) => getItemGroup(e.item) === "frame")
 
@@ -1587,7 +1750,10 @@ function DetailView(props: {
                                                 style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                                             >
                                                 <ChevronIcon open={componentLockedOpen} color={colors.text.quaternary} />
-                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Locked ({componentLockedEntries.length})</span>
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary, display: "flex", alignItems: "center", gap: 5 }}>
+                                                    <LockIcon color={colors.text.secondary} />
+                                                    Locked ({componentLockedEntries.length})
+                                                </span>
                                                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
                                                     {renderDismissControls(componentLockedEntries, "Dismiss locked items")}
                                                 </div>
@@ -1644,7 +1810,10 @@ function DetailView(props: {
                                                 style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                                             >
                                                 <ChevronIcon open={frameLockedOpen} color={colors.text.quaternary} />
-                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Locked ({frameLockedEntries.length})</span>
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary, display: "flex", alignItems: "center", gap: 5 }}>
+                                                    <LockIcon color={colors.text.secondary} />
+                                                    Locked ({frameLockedEntries.length})
+                                                </span>
                                                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
                                                     {renderDismissControls(frameLockedEntries, "Dismiss locked items")}
                                                 </div>
@@ -1678,6 +1847,23 @@ function DetailView(props: {
                                     )}
 
                                     {(!frameHasLockSections || frameOtherEntries.length > 0) && renderItemMap(frameOtherEntries)}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {textStyleEntries.length > 0 && (
+                        <div style={{ border: `1px solid ${colors.card.border}`, borderRadius: 8, overflow: "hidden" }}>
+                            <div
+                                onClick={() => setTextStylesOpen(!textStylesOpen)}
+                                style={{ padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
+                            >
+                                <ChevronIcon open={textStylesOpen} color={colors.text.quaternary} />
+                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Text Styles ({textStyleEntries.length})</span>
+                            </div>
+                            {textStylesOpen && (
+                                <div style={{ padding: "0 6px 6px 6px", backgroundColor: colors.card.bg, display: "flex", flexDirection: "column", gap: 6 }}>
+                                    {renderItemMap(textStyleEntries)}
                                 </div>
                             )}
                         </div>
@@ -1724,7 +1910,6 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
     const currentConfig = currentSection?.configs.find((c: PaddingBreakpointConfig) => c.breakpointId === currentBpId) || currentSection?.configs[0]
 
     const [hoveredFrameIdx, setHoveredFrameIdx] = useState<number | null>(null)
-    const [isAddingFrames, setIsAddingFrames] = useState(false)
     const [addFramesState, setAddFramesState] = useState<"idle" | "active" | "prompt">("idle")
     const [promptMsg, setPromptMsg] = useState("")
 
@@ -1740,13 +1925,6 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         }
     }, [currentConfig?.padding.mode, currentSection?.isLocked])
 
-    const cleanNum = (val: string): string => {
-        if (val === "") return ""
-        const stripped = val.replace(/^0+(?=\d)/, '')
-        const n = parseInt(stripped, 10)
-        return isNaN(n) ? "" : Math.max(0, n).toString()
-    }
-
     const updateConfig = (updater: (config: PaddingBreakpointConfig) => PaddingBreakpointConfig) => {
         setSections(prev => {
             const next = [...prev]
@@ -1758,7 +1936,6 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
     }
 
     const handleAddSelected = useCallback(async () => {
-        setIsAddingFrames(true)
         setAddFramesState("active")
         try {
             const framerAny = framer as unknown as Record<string, unknown>
@@ -1788,7 +1965,6 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
         } catch { 
             setPromptMsg("Error adding frames")
         } finally { 
-            setIsAddingFrames(false)
             setAddFramesState("prompt")
             setTimeout(() => setAddFramesState("idle"), 1500)
         }
@@ -1831,15 +2007,6 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
     const handleReset = useCallback(() => {
         setResults(null); setSections([createEmptySection("section-1")]); setCurrentSectionIndex(0); setCurrentBpId("L")
     }, [])
-
-    const numInputStyle: React.CSSProperties = {
-        backgroundColor: colors.input.bg,
-        border: `1px solid ${colors.input.border}`,
-        borderRadius: 6, padding: "5px 8px",
-        fontSize: 12, color: colors.text.primary,
-        textAlign: "center" as const, boxSizing: "border-box" as const,
-        MozAppearance: "textfield" as unknown as undefined,
-    }
 
     if (results !== null) {
         const s = THEME_COLORS[props.theme].status
@@ -1990,24 +2157,88 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
 
     const availableBpsInConfig = currentSection.configs.map((c: PaddingBreakpointConfig) => c.breakpointId)
     const canAddBp = availableBpsInConfig.length < 3
+    const activeConfig = currentConfig ?? currentSection.configs[0]
+    const gapValue = Number.parseInt(activeConfig.gap.value || "0", 10) || 0
+    const paddingSingleValue = Number.parseInt(activeConfig.padding.uniform || "0", 10) || 0
+    const paddingValues = {
+        T: Number.parseInt(activeConfig.padding.top || "0", 10) || 0,
+        R: Number.parseInt(activeConfig.padding.right || "0", 10) || 0,
+        B: Number.parseInt(activeConfig.padding.bottom || "0", 10) || 0,
+        L: Number.parseInt(activeConfig.padding.left || "0", 10) || 0,
+    } as const
 
     return (
         <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
             <div style={{ flex: 1, overflowY: "auto", paddingTop: 12, paddingBottom: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <button onClick={() => setCurrentSectionIndex(i => Math.max(0, i - 1))} disabled={currentSectionIndex === 0}
-                            style={{ background: "none", border: "none", color: currentSectionIndex === 0 ? colors.text.quaternary : colors.text.secondary, cursor: "pointer", padding: "0 4px", fontSize: 16 }}>
-                            ‹
-                        </button>
-                        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: colors.text.secondary }}>
-                            Check {currentSectionIndex + 1}
+                    {/* Left: back/forward buttons + label */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            {/* Back button */}
+                            <button
+                                onClick={() => setCurrentSectionIndex(i => Math.max(0, i - 1))}
+                                disabled={currentSectionIndex === 0}
+                                style={{
+                                    width: 25, height: 25,
+                                    backgroundColor: "rgba(255,255,255,0.08)",
+                                    border: "none", borderRadius: 5, padding: 3,
+                                    display: "flex", alignItems: "center", justifyContent: "center",
+                                    cursor: currentSectionIndex === 0 ? "default" : "pointer",
+                                    opacity: currentSectionIndex === 0 ? 0.5 : 1,
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                    <path d="M11 4.5L6.5 9L11 13.5" stroke="rgba(255,255,255,0.8)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                            </button>
+                            {/* Forward button */}
+                            <button
+                                onClick={() => setCurrentSectionIndex(i => Math.min(sections.length - 1, i + 1))}
+                                disabled={currentSectionIndex === sections.length - 1}
+                                style={{
+                                    width: 25, height: 25,
+                                    backgroundColor: "rgba(255,255,255,0.08)",
+                                    border: "none", borderRadius: 5, padding: 3,
+                                    display: "flex", alignItems: "center", justifyContent: "center",
+                                    cursor: currentSectionIndex === sections.length - 1 ? "default" : "pointer",
+                                    opacity: currentSectionIndex === sections.length - 1 ? 0.5 : 1,
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                    <path d="M7 4.5L11.5 9L7 13.5" stroke="rgba(255,255,255,0.8)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                            </button>
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.5)", whiteSpace: "nowrap" }}>
+                            CHECK {currentSectionIndex + 1}
                         </span>
-                        <button onClick={() => setCurrentSectionIndex(i => Math.min(sections.length - 1, i + 1))} disabled={currentSectionIndex === sections.length - 1}
-                            style={{ background: "none", border: "none", color: currentSectionIndex === sections.length - 1 ? colors.text.quaternary : colors.text.secondary, cursor: "pointer", padding: "0 4px", fontSize: 16 }}>
-                            ›
-                        </button>
                     </div>
+
+                    {/* Right: reload/reset current section */}
+                    <button
+                        onClick={() => {
+                            setSections(prev => {
+                                const next = [...prev]
+                                next[currentSectionIndex] = createEmptySection(next[currentSectionIndex].id)
+                                return next
+                            })
+                        }}
+                        title="Reset this section"
+                        style={{
+                            width: 25, height: 25,
+                            backgroundColor: "rgba(255,255,255,0.08)",
+                            border: "none", borderRadius: 5, padding: 3,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            cursor: "pointer", flexShrink: 0,
+                        }}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M12.5 7C12.5 10.04 10.04 12.5 7 12.5C3.96 12.5 1.5 10.04 1.5 7C1.5 3.96 3.96 1.5 7 1.5C8.82 1.5 10.44 2.37 11.5 3.72" stroke="rgba(255,255,255,0.8)" strokeWidth="1.3" strokeLinecap="round" />
+                            <path d="M10 1.5H11.5V3" stroke="rgba(255,255,255,0.8)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    </button>
                 </div>
 
                 {currentSection.frames.map((frame, i) => (
@@ -2055,128 +2286,70 @@ function PaddingPage(props: { theme: ThemeMode; colors: typeof THEME_COLORS.dark
                 </button>
             </div>
 
-            <div style={{ flexShrink: 0, borderTop: `1px solid ${colors.divider}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-                {/* Breakpoints control row */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                    <button onClick={handleAddBreakpoint}
-                        disabled={!canAddBp || currentSection.isLocked}
-                        style={{ backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 11, fontWeight: 600, color: canAddBp ? colors.text.primary : colors.text.tertiary, cursor: canAddBp && !currentSection.isLocked ? "pointer" : "default" }}
-                    >
-                        Add Breakpoints...
-                    </button>
-                    <button onClick={() => {
-                        setSections(prev => {
-                            const next = [...prev]
-                            next[currentSectionIndex] = { ...next[currentSectionIndex], isLocked: !next[currentSectionIndex].isLocked }
-                            return next
-                        })
-                    }}
-                        style={{ width: 28, height: 28, backgroundColor: currentSection.isLocked ? "rgba(0,140,255,0.15)" : colors.card.bg, border: `1px solid ${currentSection.isLocked ? "#008CFF" : colors.card.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
-                    >
-                        {currentSection.isLocked ? (
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                <path d="M9.5 5.5V10.5C9.5 11.0523 9.05228 11.5 8.5 11.5H3.5C2.94772 11.5 2.5 11.0523 2.5 10.5V5.5C2.5 4.94772 2.94772 4.5 3.5 4.5H8.5C9.05228 4.5 9.5 4.94772 9.5 5.5Z" stroke="#008CFF" strokeWidth="1.2" strokeLinejoin="round"/>
-                                <path d="M3.5 4.5V3.5C3.5 2.11929 4.61929 1 6 1C7.38071 1 8.5 2.11929 8.5 3.5V4.5" stroke="#008CFF" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-                            </svg>
-                        ) : (
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                <path d="M10 3.5L4.5 9L2 6.5" stroke={colors.text.secondary} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                        )}
-                    </button>
-                </div>
+            <div style={{ flexShrink: 0, borderTop: `1px solid ${colors.divider}`, paddingTop: 16, display: "flex", flexDirection: "column", gap: 16 }}>
 
-                {/* Sub-config body, dimmed if locked */}
-                <div style={{ opacity: currentSection.isLocked ? 0.4 : 1, pointerEvents: currentSection.isLocked ? "none" : "auto", display: "flex", flexDirection: "column", gap: 10 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0 }}>Type</span>
-                        <div style={{ display: "flex", backgroundColor: colors.card.bg, borderRadius: 6, border: `1px solid ${colors.card.border}`, overflow: "hidden" }}>
-                            {availableBpsInConfig.map((bpId: string, i: number) => (
-                                <button
-                                    key={bpId}
-                                    onClick={() => setCurrentBpId(bpId)}
-                                    style={{
-                                        backgroundColor: bpId === currentBpId ? colors.card.border : "transparent",
-                                        color: bpId === currentBpId ? colors.text.primary : colors.text.secondary,
-                                        border: "none", padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer",
-                                        borderRight: i < availableBpsInConfig.length - 1 ? `1px solid ${colors.card.border}` : "none"
-                                    }}
-                                >
-                                    {bpId}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
-                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                                <circle cx="5" cy="5" r="4.5" stroke={colors.text.tertiary} strokeWidth="1" />
-                                <path d="M5 2V8M2 5H8" stroke={colors.text.tertiary} strokeWidth="1" strokeLinecap="round" />
-                            </svg>
-                            Gap
-                        </span>
-                        <input type="number" placeholder="0" value={currentConfig.gap.value} onChange={(e) => updateConfig(c => ({ ...c, gap: { ...c.gap, value: cleanNum(e.target.value) } }))} min={0}
-                            style={{ ...numInputStyle, width: 44 }} />
-                        <input type="range" min={0} max={200}
-                            value={currentConfig.gap.value === "" ? 0 : parseInt(currentConfig.gap.value, 10)}
-                            onChange={(e) => updateConfig(c => ({ ...c, gap: { ...c.gap, value: cleanNum(e.target.value) } }))}
-                            style={{ flex: 1, accentColor: "#008CFF", cursor: "pointer", margin: 0 }} />
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: colors.text.primary, width: 60, flexShrink: 0, paddingTop: 7 }}>Padding</span>
-                        <button onClick={() => updateConfig(c => ({ ...c, padding: { ...c.padding, mode: "uniform" } }))} title="Uniform"
-                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${currentConfig.padding.mode === "uniform" ? "#008CFF" : colors.card.border}`,
-                                backgroundColor: currentConfig.padding.mode === "uniform" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                <rect x="2" y="2" width="10" height="10" rx="2" stroke={currentConfig.padding.mode === "uniform" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" />
-                            </svg>
-                        </button>
-                        <button onClick={() => updateConfig(c => ({ ...c, padding: { ...c.padding, mode: "individual" } }))} title="Individual sides"
-                            style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${currentConfig.padding.mode === "individual" ? "#008CFF" : colors.card.border}`,
-                                backgroundColor: currentConfig.padding.mode === "individual" ? "rgba(0,140,255,0.15)" : colors.card.bg,
-                                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                                <rect x="2" y="2" width="10" height="10" rx="2" stroke={currentConfig.padding.mode === "individual" ? "#008CFF" : colors.text.tertiary} strokeWidth="1.3" strokeDasharray="2 2" />
-                            </svg>
-                        </button>
-                        {currentConfig.padding.mode === "uniform" && (
-                            <input type="number" placeholder="0" value={currentConfig.padding.uniform} onChange={(e) => updateConfig(c => ({ ...c, padding: { ...c.padding, uniform: cleanNum(e.target.value) } }))} min={0}
-                                style={{ ...numInputStyle, flex: 1 }} />
-                        )}
-                        {currentConfig.padding.mode === "individual" && (
-                            <div style={{ flex: 1, display: "flex", gap: 8 }}>
-                                {([["T", currentConfig.padding.top, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, top: cleanNum(v) } })), 0], 
-                                   ["R", currentConfig.padding.right, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, right: cleanNum(v) } })), 1], 
-                                   ["B", currentConfig.padding.bottom, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, bottom: cleanNum(v) } })), 2], 
-                                   ["L", currentConfig.padding.left, (v: string) => updateConfig(c => ({ ...c, padding: { ...c.padding, left: cleanNum(v) } })), 3]] as Array<[string, string, (v: string) => void, number]>).map(([lbl, val, setter, idx]) => (
-                                    <div key={lbl} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-                                        <input
-                                            ref={el => { padRefs.current[idx] = el }}
-                                            type="number" placeholder="0" value={val} onChange={(e) => setter(e.target.value)} min={0}
-                                            onKeyDown={(e) => {
-                                                if (e.key === "Enter" || e.key === " ") {
-                                                    e.preventDefault()
-                                                    padRefs.current[idx + 1]?.focus()
-                                                } else if (e.key === "Backspace" && val === "") {
-                                                    e.preventDefault()
-                                                    padRefs.current[idx - 1]?.focus()
-                                                }
-                                            }}
-                                            style={{ ...numInputStyle, width: "100%", height: 28, padding: 0, fontSize: 10 }}
-                                        />
-                                        <span style={{ fontSize: 8, lineHeight: 1, color: colors.text.tertiary }}>{lbl}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
+                                <DesignPanel
+                                        colors={colors}
+                                        breakpoints={availableBpsInConfig as Array<"L" | "M" | "S">}
+                                        activeBreakpoint={currentBpId as "L" | "M" | "S"}
+                                        isLocked={currentSection.isLocked}
+                                        canAddBreakpoint={canAddBp}
+                                        gap={gapValue}
+                                        paddingMode={activeConfig.padding.mode}
+                                        paddingValue={paddingSingleValue}
+                                        paddingValues={paddingValues}
+                                        onAddBreakpoint={handleAddBreakpoint}
+                                        onToggleLocked={() => {
+                                                setSections(prev => {
+                                                        const next = [...prev]
+                                                        next[currentSectionIndex] = { ...next[currentSectionIndex], isLocked: !next[currentSectionIndex].isLocked }
+                                                        return next
+                                                })
+                                        }}
+                                        onBreakpointChange={(breakpoint) => setCurrentBpId(breakpoint)}
+                                        onGapChange={(value) => {
+                                                updateConfig((config) => ({
+                                                        ...config,
+                                                        gap: {
+                                                                ...config.gap,
+                                                                value: value.toString(),
+                                                        },
+                                                }))
+                                        }}
+                                        onPaddingModeChange={(mode) => {
+                                                updateConfig((config) => ({
+                                                        ...config,
+                                                        padding: {
+                                                                ...config.padding,
+                                                                mode,
+                                                        },
+                                                }))
+                                        }}
+                                        onPaddingValueChange={(value) => {
+                                                updateConfig((config) => ({
+                                                        ...config,
+                                                        padding: {
+                                                                ...config.padding,
+                                                                uniform: value.toString(),
+                                                        },
+                                                }))
+                                        }}
+                                        onPaddingEdgeChange={(edge, value) => {
+                                                updateConfig((config) => ({
+                                                        ...config,
+                                                        padding: {
+                                                                ...config.padding,
+                                                                top: edge === "T" ? value.toString() : config.padding.top,
+                                                                right: edge === "R" ? value.toString() : config.padding.right,
+                                                                bottom: edge === "B" ? value.toString() : config.padding.bottom,
+                                                                left: edge === "L" ? value.toString() : config.padding.left,
+                                                        },
+                                                }))
+                                        }}
+                                />
 
                 {/* Main buttons */}
-                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <div style={{ display: "flex", gap: 8 }}>
                     <button onClick={handleNextSection}
                         style={{ flex: 1, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}`,
                             borderRadius: 8, padding: "20px 18px", fontSize: 12, fontWeight: 600,

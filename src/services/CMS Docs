@@ -1,0 +1,120 @@
+Plugins can read and write to the Framer CMS. Allowing you to create anything from a Notion Sync plugin, to a custom database integration, or an exporter.
+
+Check out the video above for an overview on CMS Plugin concepts and a walkthrough of the CMS Starter Plugin. There are two kinds of ways to work with the CMS, Managed Collections and Unmanaged Collections. Unmanaged Collections are Collections in Framer that are primarily created and updated by people, whereas Managed Collections are primarily controlled by Plugins.
+
+CMS Starter
+If you’re looking to build a Plugin to sync data into Framer, the best way to get started is the CMS Starter Plugin. You can use it via the following commands:
+
+Collections
+Any kind of Collection can be read from. Collection refers to Unmanaged Collections that are created by Users. Use the collection Mode to access CMS data from your plugin.
+
+See our Export CSV example.
+
+You can get a list of all the available collections.
+
+When you have a reference to a specific collection, you can get its fields or items. In the CMS, fields are the columns used to define data types.
+
+This will return an array of objects.
+
+You can also get all CMS items.
+
+This will return all the data in the CMS as an array of objects. Item objects contain id, slug and fieldData. Field data uses the field id as keys in an object.
+
+Supported field types:
+
+boolean  — True or false
+
+color — A color of RGBA/HSL/HEX format
+
+number — A number
+
+string — Any string of text
+
+formattedText — Rich text content. Accepts HTML by default. Also supports Markdown — see Importing Markdown below
+
+image — An instance of an ImageAsset
+
+file — An instance of an FileAsset
+
+link — URL in string format
+
+date — A date in UTC format, or DD-MM-YYYY
+
+enum — Requires enum case options to be defined
+
+collectionReference — A reference to an item in another Collection
+
+multiCollectionReference — Multiple references to items in another Collection
+
+array — An array of fields. Currently only supports a single image field, which will create a Gallery.
+
+There is also an unsupported field type. This is returned when Framer uses a field that the plugin API does not yet support.
+
+Since field values can be many different kinds of type, always check the type before using it.
+
+Managed Collections
+Managed Collections are fully controlled by the plugin. Fields and items can only be added, edited and deleted by the plugin and not the user.
+
+Use a Managed Collection when you want to be able sync data between Framer and a third-party. See our Notion example.
+
+Modes
+Your Managed Collection plugin will only become available within the CMS when it supports both the configureManagedCollection and syncManagedCollection modes. Make sure to add these modes to the framer.json file. Read more on how to set this up on the configuration page.
+
+The active mode can be checked using framer.mode. When your plugin is launched with a newly created collection, the mode will be configureManagedCollection. In configuration mode the user expects to setup the fields and data source. 
+
+After the initial creation step, the user can choose to open the plugin in either sync or configuration mode. For sync mode, the best experience is to not show any UI, a toast will be visible to indicate the activity of the plugin.
+
+Getting the Managed Collection
+When your plugin is launched in either configureManagedCollection or syncManagedCollection mode, it can get the active collection via the framer.getManagedCollection().
+
+Once you have the Collection, there are several methods to perform common actions, such as getting the current fields, or adding items.
+
+Adding Fields
+Fields are used to define the type of data that is added to the collection. You can configure up to 30 custom fields. 
+
+Each custom field consists of an id, name, and type. For the id it is best to use a unique identifier that stays the same in all future synchronizations. Any change in id can break data assignments on the canvas the user has made.
+
+You can change the type of a field while reusing the existing id, Framer will take make sure that won't result in any errors. The maximum length for an id is 64 characters.
+
+User Editable Fields
+By default, managed collection fields set by a plugin won't be editable by users using the CMS. However, there are cases where you might want a few fields edited by the user. To allow this, you can set the userEditable attribute.
+
+In this example the description field can be edited by the user in the UI, the title cannot.
+
+Note that fields marked as userEditable can no longer have their values set by the plugin when using addItems. Trying to edit or add a value for an editable field will be ignored.
+
+Reference Fields
+Fields of type collectionReference and multiCollectionReference allow you to create fields that point to items in another Collection.
+
+In Plugins, items are referenced by slug—either a single slug for a collectionReference or an array of slugs for a multiCollectionReference.
+
+For Managed Collections, where item IDs are controlled by the plugin, items are referenced by their ID. Note that for managed collections, you can only create references between Collections that are managed by the same Plugin.
+
+Adding Items
+Now that your fields are setup you can add items to the collection. Typically this will involve fetching data from an external resource and looping over the items to prepare them for the custom fields that were configured earlier.
+
+Each item has a required id and slug. The data for the custom fields has to be added via fieldData. The id property for each custom field should be used as the key within the fieldData object.
+
+The addItems method can be used for both adding new items as well as updating existing ones.
+
+Importing Markdown
+By default, formattedText fields expect HTML content. If your data source uses Markdown, you can set the contentType property to "markdown" and the plugin will automatically convert it to HTML.
+
+The contentType property can be set on both field definitions (via setFields) and individual field data entries (via addItems). Accepted values are:
+
+"html" — (Default) The value is treated as HTML
+
+"markdown" — The value is treated as Markdown and converted to HTML
+
+"auto" — Automatically detects whether the value is Markdown or HTML
+
+Setting contentType on a field definition applies to all items in that field. Setting it on a field data entry applies only to that specific value, and takes precedence over the field definition.
+
+Working with Arrays
+We have recently added support for our "Gallery" fields. This comes in the form of a new field type of "array", which is due to Galleries being implemented in a way that is future-proof with arbitrary arrays of nested fields. At the moment, fields of type "array" must contain a single image field.
+
+Deleting Items
+Sometimes you want to remove data from the Managed Collection. For example if certain data is no longer present in the external data source.
+
+Storing metadata
+Similar to local storage, you can store custom data on the Managed Collection. By storing the last synchronization date, you might be able to skip some of the expensive synchronization work. But you can also store other data like the specific notion database the collection is connected to. See also the guide for Plugin Data.

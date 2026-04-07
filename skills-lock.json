@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "contrast-checker": {
+      "source": "accesslint/claude-marketplace",
+      "sourceType": "github",
+      "computedHash": "f5ba48ad7a240bac904a6e680876250ef796f442c1111346896cab5420e131c6"
+    }
+  }
+}
