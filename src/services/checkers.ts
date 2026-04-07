@@ -1,4 +1,4 @@
-import { framer } from "framer-plugin"
+import { framer, $framerInternal } from "framer-plugin"
 import type { CanvasNode, ComponentNode, FrameNode, PublishInfo } from "framer-plugin"
 import * as ts from "typescript"
 import type { AuditReport, CheckCategory, CheckItem, CheckResult, CheckStatus, PageSpeedData, PageSpeedMetric, PageSpeedStrategyData, PaddingCheckItem, PaddingReport, PaddingSection, PaddingSectionResult, ScoreLabel } from "../types"
@@ -121,14 +121,27 @@ type PublishedEnvironmentUrl = {
 
 type PublishedMetadataInfo = {
     readonly hasFavicon: boolean
-    readonly hasIcons: boolean
     readonly hasSocialPreview: boolean
-    readonly hasMetadata: boolean
+    readonly hasTitle: boolean
+    readonly hasDescription: boolean
+    readonly hasDefaultTitle: boolean
 }
 
-type LinkMetadataApiResponse = {
-    readonly status?: string
-    readonly data?: Record<string, unknown>
+type SemanticMetadataApiResponse = {
+    readonly ok?: boolean
+    readonly error?: string
+    readonly extraction?: {
+        readonly hasFavicon?: boolean
+        readonly hasSocialPreview?: boolean
+        readonly hasTitle?: boolean
+        readonly hasDescription?: boolean
+        readonly title?: string
+        readonly description?: string
+    }
+}
+
+function isDefaultFramerMetadataTitle(value: string): boolean {
+    return value.trim().toLowerCase() === "home"
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +775,45 @@ function getPublishedUrlFromInfo(publishInfo: PublishInfo | null): string | null
     return getPublishedEnvironmentUrls(publishInfo)[0]?.url ?? null
 }
 
+function stripTrailingSlash(value: string): string {
+    return value.replace(/\/+$/, "")
+}
+
+const DEFAULT_SEMANTIC_AUDIT_API_URL = "https://semantic-audit-api.vercel.app"
+
+function normalizePagePath(page: AnyNode): string | null {
+    const rawPath = typeof page.path === "string" ? page.path.trim() : ""
+    if (rawPath.length === 0) return null
+    if (rawPath === "/") return "/"
+    const prefixed = rawPath.startsWith("/") ? rawPath : `/${rawPath}`
+    return prefixed.replace(/\/+$/, "") || "/"
+}
+
+function isDynamicTemplatePath(path: string): boolean {
+    return path.split("/").some((segment) => segment.startsWith(":"))
+}
+
+function buildPublishedPageUrl(basePublishedUrl: string, page: AnyNode): string | null {
+    try {
+        const base = new URL(basePublishedUrl)
+        const path = normalizePagePath(page)
+        if (path === null) return null
+        if (isDynamicTemplatePath(path)) return null
+        const origin = stripTrailingSlash(base.origin)
+        return path === "/" ? `${origin}/` : `${origin}${path}`
+    } catch {
+        return null
+    }
+}
+
+function getSemanticAuditApiBaseUrl(): string | null {
+    const candidate = import.meta.env?.VITE_SEMANTIC_AUDIT_API_URL ?? DEFAULT_SEMANTIC_AUDIT_API_URL
+    if (typeof candidate !== "string") return null
+    const trimmed = candidate.trim()
+    if (trimmed.length === 0) return null
+    return stripTrailingSlash(trimmed)
+}
+
 async function getPublishedSiteUrl(): Promise<string | null> {
     try {
         const info = await framer.getPublishInfo()
@@ -774,110 +826,233 @@ async function getPublishedSiteUrl(): Promise<string | null> {
 }
 
 async function fetchPublishedHtml(url: string): Promise<string> {
-    const response = await fetch(url)
-    if (!response.ok) {
-        throw new Error(`Published page fetch failed (HTTP ${response.status})`)
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}&t=${Date.now()}`
+    try {
+        const response = await fetch(proxyUrl, { cache: "no-store" })
+        if (!response.ok) {
+            throw new Error(`Published page fetch failed (HTTP ${response.status})`)
+        }
+        return await response.text()
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`Failed to fetch published page '${url}': ${message}`)
     }
-    return await response.text()
+}
+
+function parseSemanticApiTagInfo(payload: unknown): PublishedTagInfo | null {
+    if (payload === null || typeof payload !== "object") return null
+    const apiPayload = payload as SemanticTagApiResponse
+    if (apiPayload.ok !== true) return null
+    const extraction = apiPayload.extraction
+    if (!extraction || typeof extraction !== "object") return null
+
+    const hasH1 = extraction.hasH1 === true
+    const hasNav = extraction.hasNav === true
+    const hasFooter = extraction.hasFooter === true
+    
+    const bodyStructureRaw = Array.isArray(extraction.bodyStructure) ? extraction.bodyStructure : []
+    const bodyStructure = bodyStructureRaw
+        .map((tag) => (typeof tag === "string" ? tag.trim().toLowerCase() : ""))
+        .filter((tag) => tag.length > 0)
+
+    const headingHierarchyRaw = Array.isArray(extraction.headingHierarchy) ? extraction.headingHierarchy : []
+    const headingHierarchy = headingHierarchyRaw
+        .map((tag) => (typeof tag === "string" ? tag.trim().toLowerCase() : ""))
+        .filter((tag) => tag.length > 0)
+
+    return {
+        hasH1,
+        hasNav,
+        hasFooter,
+        bodyStructure,
+        headingHierarchy,
+    }
+}
+
+async function fetchPublishedTagInfoViaApi(url: string): Promise<PublishedTagInfo | null> {
+    const apiBaseUrl = getSemanticAuditApiBaseUrl()
+    if (apiBaseUrl === null) return null
+
+    const endpoint = `${apiBaseUrl}/api/extract-tags?url=${encodeURIComponent(url)}&t=${Date.now()}`
+    const response = await fetch(endpoint, { cache: "no-store" })
+    if (!response.ok) {
+        throw new Error(`Semantic tag API request failed (HTTP ${response.status})`)
+    }
+
+    const payload = await response.json()
+    const parsed = parseSemanticApiTagInfo(payload)
+    if (parsed === null) {
+        throw new Error("Semantic tag API response was missing analysis data")
+    }
+    return parsed
+}
+
+async function fetchPublishedTagInfo(url: string): Promise<PublishedTagInfo> {
+    const apiResult = await fetchPublishedTagInfoViaApi(url)
+    if (apiResult !== null) return apiResult
+    const html = await fetchPublishedHtml(url)
+    return extractPublishedTagInfo(html)
 }
 
 type PublishedTagInfo = {
+    readonly hasH1: boolean
     readonly hasNav: boolean
     readonly hasFooter: boolean
-    readonly h1Count: number
-    readonly headings: ReadonlyArray<{ readonly tag: string; readonly text: string }>
-    readonly nonSemanticBodyChildren: number
-    readonly totalBodyChildren: number
+    readonly bodyStructure: ReadonlyArray<string>
+    readonly headingHierarchy: ReadonlyArray<string>
+}
+
+type SemanticTagApiResponse = {
+    readonly ok?: boolean
+    readonly error?: string
+    readonly extraction?: {
+        readonly hasH1?: boolean
+        readonly hasNav?: boolean
+        readonly hasFooter?: boolean
+        readonly bodyStructure?: ReadonlyArray<string>
+        readonly headingHierarchy?: ReadonlyArray<string>
+    }
 }
 
 function extractPublishedTagInfo(html: string): PublishedTagInfo {
     if (typeof DOMParser === "undefined") {
-        return { hasNav: false, hasFooter: false, h1Count: 0, headings: [], nonSemanticBodyChildren: 0, totalBodyChildren: 0 }
+        return { hasH1: false, hasNav: false, hasFooter: false, bodyStructure: [], headingHierarchy: [] }
     }
     const parser = new DOMParser()
     const doc = parser.parseFromString(html, "text/html")
 
-    const SEMANTIC_TAGS = new Set(["header", "nav", "main", "section", "article", "aside", "footer"])
     const IGNORE_TAGS = new Set(["script", "style", "noscript", "link", "meta"])
 
-    let nonSemanticBodyChildren = 0
-    let totalBodyChildren = 0
-    for (const child of Array.from(doc.body.children)) {
-        const tag = child.tagName.toLowerCase()
-        if (IGNORE_TAGS.has(tag)) continue
-        totalBodyChildren++
-        if (!SEMANTIC_TAGS.has(tag)) nonSemanticBodyChildren++
-    }
+    // Try to find Framer root div first, otherwise use body
+    const framerRoot = doc.querySelector("[data-framer-root]")
+    const containerElement = framerRoot ?? doc.body
 
-    const headings = Array.from(doc.querySelectorAll("h1, h2, h3, h4, h5, h6")).map((el) => ({
-        tag: el.tagName.toLowerCase(),
-        text: (el.textContent ?? "").trim().slice(0, 80),
-    }))
+    // Extract immediate children order
+    const bodyStructure = Array.from(containerElement.children)
+        .map((child) => child.tagName.toLowerCase())
+        .filter((tag) => !IGNORE_TAGS.has(tag))
+
+    // Extract heading hierarchy (only H1 and H2 in order)
+    const headingHierarchy = Array.from(doc.querySelectorAll("h1, h2, h3, h4, h5, h6"))
+        .filter((el) => {
+            const tag = el.tagName.toLowerCase()
+            return tag === "h1" || tag === "h2"
+        })
+        .map((el) => el.tagName.toLowerCase())
 
     return {
+        hasH1: doc.querySelector("h1") !== null,
         hasNav: doc.querySelector("nav") !== null,
         hasFooter: doc.querySelector("footer") !== null,
-        h1Count: doc.querySelectorAll("h1").length,
-        headings,
-        nonSemanticBodyChildren,
-        totalBodyChildren,
+        bodyStructure,
+        headingHierarchy,
     }
-}
-
-function getLinkMetadataUrl(value: unknown): string | null {
-    if (isNonEmptyString(value)) return value.trim()
-    if (value !== null && typeof value === "object") {
-        const candidate = (value as Record<string, unknown>).url
-        if (isNonEmptyString(candidate)) return candidate.trim()
-    }
-    return null
 }
 
 async function fetchPublishedMetadataInfo(url: string): Promise<PublishedMetadataInfo> {
-    const apiUrl = `https://api.microlink.io/?url=${encodeURIComponent(url)}`
-    const response = await fetch(apiUrl)
-    if (!response.ok) {
-        throw new Error(`Metadata provider request failed (HTTP ${response.status})`)
-    }
+    const apiResult = await fetchPublishedMetadataInfoViaApi(url)
+    if (apiResult !== null) return apiResult
 
-    const payload = await response.json() as LinkMetadataApiResponse
-    const data = payload.data ?? {}
+    const html = await fetchPublishedHtml(url)
 
-    const title = isNonEmptyString(data.title)
-    const description = isNonEmptyString(data.description)
-    const imageUrl = getLinkMetadataUrl(data.image)
-    const logoUrl = getLinkMetadataUrl(data.logo)
+    return extractPublishedMetadataInfoFromHtml(html)
+}
+
+function parseSemanticMetadataInfo(payload: unknown): PublishedMetadataInfo | null {
+    if (payload === null || typeof payload !== "object") return null
+    const apiPayload = payload as SemanticMetadataApiResponse
+    if (apiPayload.ok !== true) return null
+
+    const extraction = apiPayload.extraction
+    if (!extraction || typeof extraction !== "object") return null
+
+    const rawTitle = typeof extraction.title === "string" ? extraction.title.trim() : ""
+    const hasDefaultTitle = rawTitle.length > 0 && isDefaultFramerMetadataTitle(rawTitle)
+    const hasTitleSignal = extraction.hasTitle === true || rawTitle.length > 0
+    const hasTitle = hasTitleSignal && !hasDefaultTitle
+    const hasDescription = extraction.hasDescription === true || (typeof extraction.description === "string" && extraction.description.trim().length > 0)
 
     return {
-        hasFavicon: logoUrl !== null,
-        hasIcons: logoUrl !== null || imageUrl !== null,
-        hasSocialPreview: title && description && imageUrl !== null,
-        hasMetadata: title && description,
+        hasFavicon: extraction.hasFavicon === true,
+        hasSocialPreview: extraction.hasSocialPreview === true,
+        hasTitle,
+        hasDescription,
+        hasDefaultTitle,
+    }
+}
+
+async function fetchPublishedMetadataInfoViaApi(url: string): Promise<PublishedMetadataInfo | null> {
+    const apiBaseUrl = getSemanticAuditApiBaseUrl()
+    if (apiBaseUrl === null) return null
+
+    const endpoint = `${apiBaseUrl}/api/extract-metadata?url=${encodeURIComponent(url)}&t=${Date.now()}`
+    const response = await fetch(endpoint, { cache: "no-store" })
+    if (!response.ok) {
+        throw new Error(`Metadata API request failed (HTTP ${response.status})`)
     }
 
+    const payload = await response.json()
+    const parsed = parseSemanticMetadataInfo(payload)
+    if (parsed === null) {
+        throw new Error("Metadata API response was missing extraction data")
+    }
+
+    return parsed
 }
 
-async function fetchPublishedHtmlCached(url: string): Promise<string> {
-    if (!(window as any)._publishedHtmlCache) (window as any)._publishedHtmlCache = new Map<string, string>()
-    const cache = (window as any)._publishedHtmlCache as Map<string, string>
-    if (cache.has(url)) return cache.get(url)!
-    const html = await fetchPublishedHtml(url)
-    cache.set(url, html)
-    return html
+function extractPublishedMetadataInfoFromHtml(html: string): PublishedMetadataInfo {
+
+    if (typeof DOMParser === "undefined") {
+        throw new Error("DOMParser is not available for metadata inspection")
+    }
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(html, "text/html")
+
+    const title = (doc.querySelector("title")?.textContent ?? "").trim()
+    const description = (
+        doc.querySelector("meta[name='description']")?.getAttribute("content")
+        ?? doc.querySelector("meta[property='og:description']")?.getAttribute("content")
+        ?? ""
+    ).trim()
+
+    const faviconSelectors = [
+        "link[rel='icon']",
+        "link[rel='shortcut icon']",
+        "link[rel='apple-touch-icon']",
+    ]
+
+    const hasFavicon = faviconSelectors.some((selector) => {
+        const node = doc.querySelector(selector)
+        const href = node?.getAttribute("href")?.trim() ?? ""
+        return href.length > 0
+    })
+
+    const ogImage = (doc.querySelector("meta[property='og:image']")?.getAttribute("content") ?? "").trim()
+    const twitterImage = (doc.querySelector("meta[name='twitter:image']")?.getAttribute("content") ?? "").trim()
+    const hasSocialImage = ogImage.length > 0 || twitterImage.length > 0
+    const hasDefaultTitle = title.length > 0 && isDefaultFramerMetadataTitle(title)
+
+    return {
+        hasFavicon,
+        hasSocialPreview: title.length > 0 && description.length > 0 && hasSocialImage,
+        hasTitle: title.length > 0 && !hasDefaultTitle,
+        hasDescription: description.length > 0,
+        hasDefaultTitle,
+    }
 }
 
-function buildPageUrl(baseUrl: string, pagePath: string): string {
-    const path = pagePath.startsWith("/") ? pagePath : `/${pagePath}`
-    return `${baseUrl}${path}`
-}
-
-function extractBaseUrl(currentPageUrl: string): string | null {
+async function getCanvasHtmlForFrame(frameId: string): Promise<string | null> {
     try {
-        return new URL(currentPageUrl).origin
+        const fn = (framer as unknown as Record<symbol, unknown>)[$framerInternal.getHTMLForNode]
+        if (typeof fn !== "function") return null
+        const result = await (fn as (id: string) => Promise<string | null>).call(framer, frameId)
+        return result
     } catch {
         return null
     }
 }
+
 
 function extractPublishedFormTargets(html: string): ReadonlyArray<PublishedFormTarget> {
     if (typeof DOMParser === "undefined") return []
@@ -1140,6 +1315,196 @@ function resolvePublishedFormsToFramerNodes(
 
 function getFrameBackgroundImage(frame: FrameNode): ImageAsset | null {
     return (frame.backgroundImage as ImageAsset | null) ?? null
+}
+
+function normalizeNonEmptyText(value: unknown): string | null {
+    if (typeof value !== "string") return null
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null
+}
+
+function extractImageAssetId(value: unknown): string | null {
+    const seen = new WeakSet<object>()
+
+    const visit = (candidate: unknown, depth: number): string | null => {
+        if (!isRecord(candidate) || depth > 7) return null
+        const objectCandidate = candidate as object
+        if (seen.has(objectCandidate)) return null
+        seen.add(objectCandidate)
+
+        const directId = candidate.id
+        if (typeof directId === "string" && directId.trim().length > 0) return directId
+
+        const nestedPriorityKeys = ["defaultValue", "value", "image", "asset"]
+        for (const key of nestedPriorityKeys) {
+            const nested = candidate[key]
+            const nestedId = visit(nested, depth + 1)
+            if (nestedId) return nestedId
+        }
+
+        if (Array.isArray(candidate)) {
+            for (const entry of candidate) {
+                const nestedId = visit(entry, depth + 1)
+                if (nestedId) return nestedId
+            }
+            return null
+        }
+
+        for (const nested of Object.values(candidate)) {
+            const nestedId = visit(nested, depth + 1)
+            if (nestedId) return nestedId
+        }
+
+        return null
+    }
+
+    return visit(value, 0)
+}
+
+function extractImageAltText(value: unknown): string | null {
+    const seen = new WeakSet<object>()
+
+    const visit = (candidate: unknown, depth: number): string | null => {
+        if (!isRecord(candidate) || depth > 7) return null
+        const objectCandidate = candidate as object
+        if (seen.has(objectCandidate)) return null
+        seen.add(objectCandidate)
+
+        const directAltText = normalizeNonEmptyText(candidate.altText)
+        if (directAltText) return directAltText
+
+        const directAlt = normalizeNonEmptyText(candidate.alt)
+        if (directAlt) return directAlt
+
+        const nestedPriorityKeys = ["defaultValue", "value", "image", "asset"]
+        for (const key of nestedPriorityKeys) {
+            const nestedAlt = visit(candidate[key], depth + 1)
+            if (nestedAlt) return nestedAlt
+        }
+
+        if (Array.isArray(candidate)) {
+            for (const entry of candidate) {
+                const nestedAlt = visit(entry, depth + 1)
+                if (nestedAlt) return nestedAlt
+            }
+            return null
+        }
+
+        for (const nested of Object.values(candidate)) {
+            const nestedAlt = visit(nested, depth + 1)
+            if (nestedAlt) return nestedAlt
+        }
+
+        return null
+    }
+
+    return visit(value, 0)
+}
+
+function collectImageAltTextByAssetIdFromValues(values: ReadonlyArray<unknown>): ReadonlyMap<string, string> {
+    const found = new Map<string, string>()
+    const seen = new WeakSet<object>()
+
+    const writeIfPresent = (candidate: Record<string, unknown>): void => {
+        const directId = typeof candidate.id === "string" && candidate.id.trim().length > 0
+            ? candidate.id
+            : null
+        if (!directId) return
+
+        const directAlt = normalizeNonEmptyText(candidate.altText) ?? normalizeNonEmptyText(candidate.alt)
+        if (!directAlt) return
+        if (!found.has(directId)) found.set(directId, directAlt)
+    }
+
+    const visit = (candidate: unknown, depth: number): void => {
+        if (!isRecord(candidate)) return
+        if (depth > 8) return
+        const objectCandidate = candidate as object
+        if (seen.has(objectCandidate)) return
+        seen.add(objectCandidate)
+
+        writeIfPresent(candidate)
+
+        const nestedPriorityKeys = ["defaultValue", "value", "image", "asset"]
+        for (const key of nestedPriorityKeys) {
+            visit(candidate[key], depth + 1)
+        }
+
+        if (Array.isArray(candidate)) {
+            for (const entry of candidate) visit(entry, depth + 1)
+            return
+        }
+
+        for (const nested of Object.values(candidate)) {
+            visit(nested, depth + 1)
+        }
+    }
+
+    for (const value of values) visit(value, 0)
+    return found
+}
+
+type PageImageCandidate = {
+    readonly key: string
+    readonly assetId: string | null
+    readonly altText: string | null
+    readonly previewUrl: string | null
+}
+
+function collectImageCandidatesFromValue(value: unknown): ReadonlyArray<PageImageCandidate> {
+    const candidates: PageImageCandidate[] = []
+    const seen = new WeakSet<object>()
+
+    const visit = (candidate: unknown, path: string, depth: number): void => {
+        if (!isRecord(candidate) || depth > 8) return
+        const objectCandidate = candidate as object
+        if (seen.has(objectCandidate)) return
+        seen.add(objectCandidate)
+
+        const assetId = extractImageAssetId(candidate)
+        const altText = extractImageAltText(candidate)
+        const previewUrl = normalizeNonEmptyText(candidate.thumbnailUrl) ?? normalizeNonEmptyText(candidate.url)
+        const hasAssetMethods = typeof candidate.getData === "function" || typeof candidate.cloneWithAttributes === "function"
+        const looksLikeImageAsset = (assetId !== null) && (
+            hasAssetMethods
+            || normalizeNonEmptyText(candidate.mimeType) !== null
+            || normalizeNonEmptyText(candidate.url) !== null
+            || normalizeNonEmptyText(candidate.thumbnailUrl) !== null
+        )
+        const objectType = typeof candidate.type === "string" ? candidate.type.toLowerCase() : ""
+        const looksLikeImageControl = objectType === "image"
+
+        if (looksLikeImageAsset || looksLikeImageControl) {
+            const key = assetId ?? path
+            candidates.push({ key, assetId, altText, previewUrl })
+        }
+
+        const nestedPriorityKeys = ["defaultValue", "value", "image", "asset", "controls", "typedControls", "props", "properties", "componentProperties"]
+        for (const key of nestedPriorityKeys) {
+            const nested = candidate[key]
+            const nextPath = path.length > 0 ? `${path}.${key}` : key
+            visit(nested, nextPath, depth + 1)
+        }
+
+        if (Array.isArray(candidate)) {
+            for (let index = 0; index < candidate.length; index++) {
+                visit(candidate[index], `${path}[${index}]`, depth + 1)
+            }
+            return
+        }
+
+        for (const [nestedKey, nested] of Object.entries(candidate)) {
+            const nextPath = path.length > 0 ? `${path}.${nestedKey}` : nestedKey
+            visit(nested, nextPath, depth + 1)
+        }
+    }
+
+    visit(value, "root", 0)
+    return candidates
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,21 +1906,128 @@ function withFramePageLabel(nodes: AllNodes, item: CheckItem, nodeId: string): C
     return { ...item, pageLabel }
 }
 
+type PublishedPageTagAudit = {
+    readonly page: AnyNode
+    readonly pageName: string
+    readonly pageUrl: string
+    readonly frameNodeId: string
+    readonly tagInfo: PublishedTagInfo | null
+    readonly error: string | null
+}
+
+async function getPublishedTagAuditsByPage(nodes: AllNodes): Promise<ReadonlyArray<PublishedPageTagAudit>> {
+    if (nodes.pages.length === 0) return []
+
+    let publishInfo: PublishInfo | null = null
+    try {
+        publishInfo = await framer.getPublishInfo()
+    } catch {
+        publishInfo = null
+    }
+
+    const basePublishedUrl = getPublishedUrlFromInfo(publishInfo)
+
+    const tagInfoByUrl = new Map<string, PublishedTagInfo>()
+    const errorByUrl = new Map<string, string>()
+    const audits: Array<PublishedPageTagAudit> = []
+
+    for (const page of nodes.pages as ReadonlyArray<AnyNode>) {
+        const pageName = getPageDisplayLabel(page) ?? "Untitled page"
+        const frameNodeId = nodes.breakpointFramesByPageId.get(page.id)?.[0] ?? null
+        if (frameNodeId === null) continue
+
+        const pageUrl = basePublishedUrl ? (buildPublishedPageUrl(basePublishedUrl, page) ?? "") : ""
+        let tagInfo: PublishedTagInfo | null = null
+        let error: string | null = null
+
+        const canvasHtml = await getCanvasHtmlForFrame(frameNodeId)
+        if (canvasHtml && canvasHtml.trim().length > 0) {
+            tagInfo = extractPublishedTagInfo(canvasHtml)
+        }
+
+        if (tagInfo === null && pageUrl.length > 0) {
+            if (!tagInfoByUrl.has(pageUrl) && !errorByUrl.has(pageUrl)) {
+                try {
+                    const resolved = await fetchPublishedTagInfo(pageUrl)
+                    tagInfoByUrl.set(pageUrl, resolved)
+                } catch (fetchError) {
+                    const message = fetchError instanceof Error ? fetchError.message : String(fetchError)
+                    errorByUrl.set(pageUrl, message)
+                }
+            }
+            tagInfo = tagInfoByUrl.get(pageUrl) ?? null
+            error = errorByUrl.get(pageUrl) ?? null
+        }
+
+        audits.push({
+            page,
+            pageName,
+            pageUrl,
+            frameNodeId,
+            tagInfo,
+            error,
+        })
+    }
+
+    return audits
+}
+
+async function getCmsItemNodeIds(nodes: AllNodes): Promise<ReadonlySet<string>> {
+    const ids = new Set<string>()
+
+    for (const collection of nodes.collections) {
+        let items: ReadonlyArray<CollectionItem> = []
+        try {
+            items = await collection.getItems()
+        } catch {
+            continue
+        }
+
+        for (const item of items) {
+            if (typeof item.nodeId === "string" && item.nodeId.trim().length > 0) {
+                ids.add(item.nodeId)
+            }
+        }
+    }
+
+    return ids
+}
 // ---------------------------------------------------------------------------
 // ASSETS CHECKS (11)
 // ---------------------------------------------------------------------------
-
 async function checkAltText(nodes: AllNodes): Promise<CheckResult> {
     const id = "alt-text"
     const label = "Image Alt Text"
     const missing: Array<CheckItem> = []
     let imageCount = 0
     const seenNodeIds = new Set<string>()
+    const cmsNodeIds = await getCmsItemNodeIds(nodes)
+
+    const imageValueSources: unknown[] = [
+        ...nodes.frameNodes.filter((frame) => !nodes.nodesInAnyVariant.has(frame.id)),
+        ...nodes.componentNodes.filter((component) => !nodes.nodesInAnyVariant.has(component.id)),
+    ]
+
+    try {
+        const framerAny = framer as unknown as {
+            getVariables?: () => Promise<ReadonlyArray<unknown>>
+        }
+        if (typeof framerAny.getVariables === "function") {
+            const globalVariables = await framerAny.getVariables().catch(() => [])
+            imageValueSources.push(...globalVariables)
+        }
+    } catch {
+        // Optional variables API unavailable; continue with node-based sources.
+    }
+
+    const imageAltByAssetId = collectImageAltTextByAssetIdFromValues(imageValueSources)
 
     for (const frame of nodes.frameNodes) {
         // Only check frames in the primary breakpoint and primary variant
         if (nodes.nodesInNonFirstBreakpoints.has(frame.id)) continue
         if (nodes.nodesInNonPrimaryVariants.has(frame.id)) continue
+        if (nodes.nodesInAnyVariant.has(frame.id)) continue
+        if (cmsNodeIds.has(frame.id)) continue
         const asset = getFrameBackgroundImage(frame)
         if (!asset) continue
         if (seenNodeIds.has(frame.id)) continue
@@ -1563,9 +2035,50 @@ async function checkAltText(nodes: AllNodes): Promise<CheckResult> {
 
         imageCount++
 
-        const altText = asset.altText
+        const directAlt = normalizeNonEmptyText(asset.altText)
+        const mappedAlt = (() => {
+            const assetId = extractImageAssetId(asset)
+            return assetId ? imageAltByAssetId.get(assetId) ?? null : null
+        })()
+        const altText = directAlt ?? mappedAlt
         if (!altText || altText.trim().length === 0) {
             missing.push(withFramePageLabel(nodes, { label: getNodeName(frame as AnyNode), nodeId: frame.id, previewUrl: asset.thumbnailUrl ?? null }, frame.id))
+        }
+    }
+
+    for (const componentNode of nodes.componentNodes) {
+        const componentNodeId = componentNode.id
+        if (nodes.nodesInNonFirstBreakpoints.has(componentNodeId)) continue
+        if (nodes.nodesInNonPrimaryVariants.has(componentNodeId)) continue
+        if (nodes.nodesInAnyVariant.has(componentNodeId)) continue
+        if (cmsNodeIds.has(componentNodeId)) continue
+
+        const componentImageCandidates = collectImageCandidatesFromValue(componentNode)
+        const seenComponentImageKeys = new Set<string>()
+
+        for (const candidate of componentImageCandidates) {
+            const candidateKey = candidate.assetId ?? candidate.key
+            if (seenComponentImageKeys.has(candidateKey)) continue
+            seenComponentImageKeys.add(candidateKey)
+
+            imageCount++
+
+            const mappedAlt = candidate.assetId
+                ? (imageAltByAssetId.get(candidate.assetId) ?? null)
+                : null
+            const altText = candidate.altText ?? mappedAlt
+
+            if (!altText || altText.trim().length === 0) {
+                missing.push(withFramePageLabel(
+                    nodes,
+                    {
+                        label: getNodeName(componentNode),
+                        nodeId: componentNodeId,
+                        previewUrl: candidate.previewUrl,
+                    },
+                    componentNodeId,
+                ))
+            }
         }
     }
 
@@ -1585,17 +2098,23 @@ async function checkAltText(nodes: AllNodes): Promise<CheckResult> {
             // Only check images in the primary breakpoint and primary variant
             if (nodes.nodesInNonFirstBreakpoints.has(nodeId)) continue
             if (nodes.nodesInNonPrimaryVariants.has(nodeId)) continue
+            if (nodes.nodesInAnyVariant.has(nodeId)) continue
+            if (cmsNodeIds.has(nodeId)) continue
             seenNodeIds.add(nodeId)
 
             imageCount++
 
-            const directAlt = typeof imageNode.altText === "string" ? imageNode.altText : undefined
+            const directAlt = normalizeNonEmptyText(imageNode.altText)
             const imageObj = (imageNode.image ?? null) as Record<string, unknown> | null
-            const nestedAlt = imageObj && typeof imageObj.altText === "string" ? imageObj.altText : undefined
-            const altText = directAlt ?? nestedAlt
+            const nestedAlt = normalizeNonEmptyText(imageObj?.altText)
+            const imageAssetId = extractImageAssetId(imageObj ?? imageNode)
+            const mappedAlt = imageAssetId ? imageAltByAssetId.get(imageAssetId) ?? null : null
+            const altText = directAlt ?? nestedAlt ?? mappedAlt
 
             if (!altText || altText.trim().length === 0) {
-                const previewUrl = typeof imageNode.thumbnailUrl === "string" ? imageNode.thumbnailUrl : null
+                const previewUrl = typeof imageNode.thumbnailUrl === "string"
+                    ? imageNode.thumbnailUrl
+                    : (typeof imageObj?.thumbnailUrl === "string" ? imageObj.thumbnailUrl : null)
                 missing.push({ label: getNodeName(imageNode as unknown as AnyNode), nodeId, previewUrl })
             }
         }
@@ -1736,8 +2255,10 @@ async function checkTextStyles(nodes: AllNodes): Promise<CheckResult> {
     const id = "text-styles"
     const label = "Text Styles"
     const missing: Array<CheckItem> = []
+    const cmsNodeIds = await getCmsItemNodeIds(nodes)
 
     for (const node of nodes.textNodes) {
+        if (cmsNodeIds.has(node.id)) continue
         const inlineTextStyle = (node as AnyNode).inlineTextStyle
         if (inlineTextStyle === null || inlineTextStyle === undefined) {
             missing.push({ label: getNodeName(node), nodeId: node.id, locked: isLockedNode(node as AnyNode) })
@@ -1820,12 +2341,8 @@ async function checkColorContrast(nodes: AllNodes): Promise<CheckResult> {
             let textColorStr = resolveBackgroundColor(inlineStyle?.color)
 
             if (!textColorStr) {
-                // Fallback: try $framerInternal.getHTMLForNode for manually-styled text
-                const internal = (window as unknown as Record<string, unknown>).$framerInternal as Record<string, unknown> | undefined
-                if (internal && typeof internal.getHTMLForNode === "function") {
-                    const html = await (internal.getHTMLForNode as (id: string) => Promise<string | null>)(node.id)
-                    if (html) textColorStr = extractColorFromHTML(html)
-                }
+                const html = await getCanvasHtmlForFrame(node.id)
+                if (html) textColorStr = extractColorFromHTML(html)
             }
 
             if (!textColorStr) continue
@@ -1919,6 +2436,9 @@ async function checkCmsUsage(nodes: AllNodes): Promise<CheckResult> {
     const id = "cms-usage"
     const label = "CMS Usage"
 
+    if (nodes.collections.length === 0) {
+        return makeCheck(id, label, "skip", "No CMS collections found — skipped", [], true)
+    }
 
     let totalItems = 0
     const emptyCollections: Array<CheckItem> = []
@@ -1944,6 +2464,9 @@ async function checkCmsFieldNamingConvention(nodes: AllNodes): Promise<CheckResu
     const id = "cms-field-naming"
     const label = "CMS Field Naming Convention"
 
+    if (nodes.collections.length === 0) {
+        return makeCheck(id, label, "skip", "No CMS collections found — skipped", [], true)
+    }
 
     const issues: Array<CheckItem> = []
     let totalFields = 0
@@ -2118,14 +2641,7 @@ async function checkDuplicateCmsContent(nodes: AllNodes): Promise<CheckResult> {
     const collectionsToScan = nodes.collections
 
     if (collectionsToScan.length === 0) {
-        return makeCheck(
-            id,
-            label,
-            "fail",
-            "No CMS collections were available to list.",
-            [],
-            true,
-        )
+        return makeCheck(id, label, "skip", "No CMS collections found — skipped", [], true)
     }
 
     const itemsByCollection = new Map<string, CheckItem[]>()
@@ -2251,10 +2767,80 @@ async function checkDuplicateCmsContent(nodes: AllNodes): Promise<CheckResult> {
 // LINKS CHECKS (4)
 // ---------------------------------------------------------------------------
 
-function getNodeLink(node: AnyNode): string | null {
-    const link = node.link
-    if (typeof link === "string" && link.length > 0) return link
-    return null
+function normalizeDiscoveredLink(value: unknown): string | null {
+    if (typeof value !== "string") return null
+    const normalized = value.trim()
+    return normalized.length > 0 ? normalized : null
+}
+
+function extractLinkValuesFromUnknown(input: unknown, maxDepth: number): ReadonlyArray<string> {
+    const links = new Set<string>()
+    const seenObjects = new WeakSet<object>()
+    const linkKeyPattern = /(link|href|url|destination|action|webpage|pageid)/i
+
+    const visit = (value: unknown, depth: number, keyHint: string): void => {
+        if (depth > maxDepth || value === null || value === undefined) return
+
+        const direct = normalizeDiscoveredLink(value)
+        if (direct !== null && linkKeyPattern.test(keyHint)) {
+            links.add(direct)
+            return
+        }
+
+        if (typeof value !== "object") return
+        const obj = value as object
+        if (seenObjects.has(obj)) return
+        seenObjects.add(obj)
+
+        if (Array.isArray(value)) {
+            for (const entry of value) visit(entry, depth + 1, keyHint)
+            return
+        }
+
+        const record = value as Record<string, unknown>
+        const objectType = typeof record.type === "string" ? record.type.toLowerCase() : ""
+        if (objectType === "link" || objectType === "url" || objectType === "webpage") {
+            for (const candidate of [record.url, record.href, record.path, record.value]) {
+                const normalized = normalizeDiscoveredLink(candidate)
+                if (normalized !== null) links.add(normalized)
+            }
+            if (typeof record.webPageId === "string" && record.webPageId.trim().length > 0) {
+                links.add(record.webPageId.trim())
+            }
+            if (typeof record.pageId === "string" && record.pageId.trim().length > 0) {
+                links.add(record.pageId.trim())
+            }
+        }
+
+        for (const [key, nested] of Object.entries(record)) {
+            if (linkKeyPattern.test(key)) {
+                const normalized = normalizeDiscoveredLink(nested)
+                if (normalized !== null) links.add(normalized)
+            }
+            visit(nested, depth + 1, key)
+        }
+    }
+
+    visit(input, 0, "link")
+    return Array.from(links)
+}
+
+function collectNodeLinkValues(node: AnyNode): ReadonlyArray<string> {
+    const links = new Set<string>()
+    for (const value of [
+        node.link,
+        node.typedControls,
+        node.controls,
+        node.props,
+        node.properties,
+        node.componentProperties,
+        node,
+    ]) {
+        for (const link of extractLinkValuesFromUnknown(value, 6)) {
+            links.add(link)
+        }
+    }
+    return Array.from(links)
 }
 
 async function collectAllLinks(nodes: AllNodes): Promise<ReadonlyArray<{ name: string; link: string }>> {
@@ -2265,8 +2851,8 @@ async function collectAllLinks(nodes: AllNodes): Promise<ReadonlyArray<{ name: s
         ...nodes.componentNodes,
     ]
     for (const node of allNodes) {
-        const link = getNodeLink(node)
-        if (link) {
+        const links = collectNodeLinkValues(node)
+        for (const link of links) {
             results.push({ name: getNodeName(node), link })
         }
     }
@@ -2277,7 +2863,10 @@ async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
     const id = "mailto-tel-links"
     const label = "Mailto/Tel Links"
     const allLinks = await collectAllLinks(nodes)
-    const mailtoTelLinks = allLinks.filter((l) => l.link.startsWith("mailto:") || l.link.startsWith("tel:"))
+    const mailtoTelLinks = allLinks.filter((l) => {
+        const normalized = l.link.toLowerCase()
+        return normalized.startsWith("mailto:") || normalized.startsWith("tel:")
+    })
 
     if (mailtoTelLinks.length === 0) {
         return makeCheck(id, label, "skip", "No mailto/tel links found — skipped", [], true)
@@ -2303,25 +2892,123 @@ async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
     return makeCheck(id, label, "warning", `${issues.length} mailto/tel links have invalid format`, issues, true)
 }
 
+// ---------------------------------------------------------------------------
+// Walks a node's parent chain and returns true if a WebPageNode ancestor is
+// found before hitting a DesignPageNode, null (detached), or the depth limit.
+// Used to filter VectorSetItemNodes to only those placed on published pages.
+async function isOnPage(node: AnyNode, pageIds: ReadonlySet<string>, designPageIds: ReadonlySet<string>): Promise<boolean> {
+    let current: AnyNode | null = node
+    const MAX_DEPTH = 40
+    for (let i = 0; i < MAX_DEPTH; i++) {
+        current = (await current.getParent().catch(() => null)) as AnyNode | null
+        if (current === null) return false
+        if (pageIds.has(current.id)) return true
+        if (designPageIds.has(current.id)) return false
+    }
+    return false
+}
+
+// Fetches all VectorSetItemNodes that are:
+//   • Placed on a WebPage (not floating, not on a DesignPage)
+//   • In the primary breakpoint (not tablet / mobile breakpoints)
+//   • In the primary component variant (not alternate variants)
+// The two color properties Framer stores on a VectorSetItemNode are:
+//   • fill  — the fill/body color of the vector
+//   • color — the selection / outline color shown in the design panel
+async function fetchVectorSetItemNodesOnPages(nodes: AllNodes): Promise<ReadonlyArray<AnyNode>> {
+    const framerAny = framer as unknown as Record<string, unknown>
+    let rawNodes: ReadonlyArray<AnyNode> = []
+    try {
+        rawNodes = await (framerAny.getNodesWithType as (t: string) => Promise<ReadonlyArray<AnyNode>>)("VectorSetItemNode").catch(() => [])
+    } catch {
+        return []
+    }
+
+    const pageIds = new Set(nodes.pages.map((p) => p.id))
+    const result: Array<AnyNode> = []
+
+    for (const node of rawNodes) {
+        // Exclude non-first breakpoints and non-primary variants
+        if (nodes.nodesInNonFirstBreakpoints.has(node.id)) continue
+        if (nodes.nodesInNonPrimaryVariants.has(node.id)) continue
+        // Exclude nodes not reachable from a WebPage
+        if (!(await isOnPage(node, pageIds, nodes.designFilePageIds))) continue
+        result.push(node)
+    }
+
+    return result
+}
+
+function isRawColorString(value: string): boolean {
+    return (value.startsWith("#") || value.startsWith("rgb") || value.startsWith("hsl")) &&
+        value !== "rgba(0,0,0,0)" && value !== "transparent"
+}
+
 async function checkColorStyles(nodes: AllNodes): Promise<CheckResult> {
     const id = "color-styles"
     const label = "Color Styles"
     const flagged: Array<CheckItem> = []
 
     for (const node of nodes.textNodes) {
+        if (nodes.nodesInNonFirstBreakpoints.has(node.id)) continue
+        if (nodes.nodesInNonPrimaryVariants.has(node.id)) continue
         const color = (node as AnyNode).color
-        if (typeof color === "string" && (color.startsWith("#") || color.startsWith("rgb") || color.startsWith("hsl"))) {
-            flagged.push({ label: `${getNodeName(node as AnyNode)}: Raw Color`, nodeId: node.id as string, locked: isLockedNode(node as AnyNode) })
+        if (typeof color === "string" && isRawColorString(color)) {
+            // Distinguish nodes that have a text style applied but override its color
+            const inlineTextStyle = (node as AnyNode).inlineTextStyle
+            const hasTextStyle = inlineTextStyle !== null && inlineTextStyle !== undefined
+            const itemLabel = hasTextStyle
+                ? `${getNodeName(node as AnyNode)}: Color override on text style`
+                : `${getNodeName(node as AnyNode)}: Raw Color`
+            flagged.push({ label: itemLabel, nodeId: node.id as string, locked: isLockedNode(node as AnyNode) })
+        }
+    }
+
+    // Check SVG (icon) nodes for raw color
+    for (const node of nodes.svgNodes) {
+        if (nodes.nodesInNonFirstBreakpoints.has(node.id)) continue
+        if (nodes.nodesInNonPrimaryVariants.has(node.id)) continue
+        const color = (node as AnyNode).color
+        if (typeof color === "string" && isRawColorString(color)) {
+            flagged.push({ label: `${getNodeName(node as AnyNode)}: Raw Color (Icon)`, nodeId: node.id as string, locked: isLockedNode(node as AnyNode) })
+        }
+    }
+
+    // Check VectorSetItem nodes — fetch with page / breakpoint / variant filtering
+    const vectorSetItemNodes = await fetchVectorSetItemNodesOnPages(nodes)
+    for (const node of vectorSetItemNodes) {
+        const raw = node as Record<string, unknown>
+        const fill = raw.fill
+        const selectionColor = raw.color
+        const hasFillRaw = typeof fill === "string" && isRawColorString(fill)
+        const hasColorRaw = typeof selectionColor === "string" && isRawColorString(selectionColor)
+        if (hasFillRaw || hasColorRaw) {
+            flagged.push({ label: `${getNodeName(node)}: Raw Color (Vector)`, nodeId: node.id, locked: isLockedNode(node) })
         }
     }
 
     for (const frame of nodes.contentFrameNodes) {
+        if (nodes.nodesInNonPrimaryVariants.has(frame.id)) continue
         const bg = (frame as AnyNode).backgroundColor
-        if (typeof bg === "string" && (bg.startsWith("#") || bg.startsWith("rgb") || bg.startsWith("hsl"))) {
-            if (bg !== "rgba(0,0,0,0)" && bg !== "transparent") {
-                flagged.push(withFramePageLabel(nodes, { label: `${getNodeName(frame as AnyNode)}: Raw Background`, nodeId: frame.id as string, locked: isLockedNode(frame as AnyNode) }, frame.id))
+        if (typeof bg === "string" && isRawColorString(bg)) {
+            flagged.push(withFramePageLabel(nodes, { label: `${getNodeName(frame as AnyNode)}: Raw Background`, nodeId: frame.id as string, locked: isLockedNode(frame as AnyNode) }, frame.id))
+        }
+    }
+
+    // Check text styles for raw color values (not referencing a Color Style)
+    try {
+        const textStyles = await framer.getTextStyles()
+        for (const style of textStyles) {
+            const raw = style as unknown as Record<string, unknown>
+            const name = typeof raw.name === "string" ? raw.name : ""
+            if (name.trim() === "") continue
+            const color = raw.color
+            if (typeof color === "string" && isRawColorString(color)) {
+                flagged.push({ label: `Text style "${name}": Raw Color`, nodeId: null })
             }
         }
+    } catch {
+        // getTextStyles not available — skip
     }
 
     if (flagged.length === 0) {
@@ -2528,48 +3215,84 @@ async function checkNavFooterTags(nodes: AllNodes): Promise<CheckResult> {
     const label = "Nav & Footer Tags"
     const flagged: Array<CheckItem> = []
 
-    const publishedUrl = await getPublishedSiteUrl()
-    const baseUrl = publishedUrl ? extractBaseUrl(publishedUrl) : null
-
-    if (!baseUrl || nodes.pages.length === 0) {
-        return makeCheck(id, label, "warning", `Site is not published or no pages found (baseUrl=${baseUrl}, pages=${nodes.pages.length}). Publish your site to run this check.`, [], true)
+    if (nodes.pages.length === 0) {
+        return skipCheck(id, label, "No pages found")
     }
 
-    let fetchedCount = 0
-    let firstError = ""
-    for (const page of nodes.pages as ReadonlyArray<AnyNode>) {
-        const pageName = getPageDisplayLabel(page) ?? "Untitled page"
-        const pagePath = typeof (page as any).path === "string" ? (page as any).path as string : "/"
-        const frameNodeId = nodes.breakpointFramesByPageId.get(page.id)?.[0] ?? null
-        const pageUrl = buildPageUrl(baseUrl, pagePath)
-        try {
-            const html = await fetchPublishedHtmlCached(pageUrl)
-            const tagInfo = extractPublishedTagInfo(html)
-            fetchedCount++
-            const missingParts: string[] = []
-            if (!tagInfo.hasNav) missingParts.push("Nav")
-            if (!tagInfo.hasFooter) missingParts.push("Footer")
-            if (missingParts.length > 0) {
-                flagged.push({ label: `'${pageName}': Missing ${missingParts.join(" and ")} tag`, nodeId: frameNodeId })
-            }
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err)
-            if (!firstError) firstError = `${pageUrl}: ${msg}`
+    const pageAudits = await getPublishedTagAuditsByPage(nodes)
+    const successfulAudits = pageAudits.filter((audit) => audit.tagInfo !== null)
+
+    for (const audit of successfulAudits) {
+        const tagInfo = audit.tagInfo as PublishedTagInfo
+        const missingParts: string[] = []
+        if (!tagInfo.hasNav) missingParts.push("Nav")
+        if (!tagInfo.hasFooter) missingParts.push("Footer")
+        if (missingParts.length > 0) {
+            flagged.push({ label: `'${audit.pageName}': Missing ${missingParts.join(" and ")} tag`, nodeId: audit.frameNodeId })
         }
     }
 
-    if (fetchedCount === 0) {
-        return makeCheck(id, label, "warning", `Could not fetch any published pages. First error: ${firstError || "unknown"}`, [], true)
+    if (successfulAudits.length === 0) {
+        const firstError = pageAudits.find((audit) => audit.error !== null)?.error
+        const detail = firstError
+            ? `Could not fetch published page HTML tags. ${firstError}`
+            : "Could not fetch published page HTML tags for any page."
+        return makeCheck(id, label, "warning", detail, [], true)
     }
     if (flagged.length === 0) {
-        return makeCheck(id, label, "pass", `All ${fetchedCount} page(s) have <nav> and <footer> tags`, [], true)
+        return makeCheck(id, label, "pass", `All ${successfulAudits.length} page(s) have <nav> and <footer> tags`, [], true)
     }
     return makeCheck(id, label, "warning", `${flagged.length} page(s) missing nav or footer tag`, flagged, true)
 }
 
 
-async function checkTagChecker(_nodes: AllNodes): Promise<CheckResult> {
-    return skipCheck("tag-checker", "Tag Checker", "This check has been temporarily disabled.")
+async function checkTagChecker(nodes: AllNodes): Promise<CheckResult> {
+    const id = "tag-checker"
+    const label = "Tag Checker"
+    const flagged: Array<CheckItem> = []
+
+    const pageAudits = await getPublishedTagAuditsByPage(nodes)
+    const successfulAudits = pageAudits.filter((audit) => audit.tagInfo !== null)
+
+    for (const audit of successfulAudits) {
+        const tagInfo = audit.tagInfo as PublishedTagInfo
+        const bodyStructure = tagInfo.bodyStructure
+        if (bodyStructure.length === 0) continue
+
+        const frameNode = await framer.getNode(audit.frameNodeId).catch(() => null)
+        const orderedImmediateChildren = frameNode
+            ? (await (frameNode as AnyNode).getChildren().catch(() => []) as ReadonlyArray<AnyNode>)
+            : []
+
+        const filteredImmediateChildren = orderedImmediateChildren.filter((node) => {
+            if (nodes.nodesInNonFirstBreakpoints.has(node.id)) return false
+            if (nodes.nodesInNonPrimaryVariants.has(node.id)) return false
+            return true
+        })
+
+        for (let index = 0; index < bodyStructure.length; index++) {
+            const tag = bodyStructure[index]
+            if (tag !== "div") continue
+
+            const matchedNode = filteredImmediateChildren[index] ?? null
+            flagged.push({
+                label: `'${audit.pageName}': Immediate body child #${index + 1} is <div>; set a semantic tag`,
+                nodeId: matchedNode?.id ?? audit.frameNodeId,
+            })
+        }
+    }
+
+    if (successfulAudits.length === 0) {
+        const firstError = pageAudits.find((audit) => audit.error !== null)?.error
+        const detail = firstError
+            ? `Could not fetch published page HTML tags. ${firstError}`
+            : "Could not fetch published page HTML tags for any page."
+        return makeCheck(id, label, "warning", detail, [], true)
+    }
+    if (flagged.length === 0) {
+        return makeCheck(id, label, "pass", `All ${successfulAudits.length} page(s) use semantic tags for immediate body children`, [], true)
+    }
+    return makeCheck(id, label, "warning", `${flagged.length} immediate body child tag issue(s) found`, flagged, true)
 }
 
 async function checkCustom404Page(nodes: AllNodes): Promise<CheckResult> {
@@ -2611,8 +3334,38 @@ async function checkBrokenInternalLinks(nodes: AllNodes): Promise<CheckResult> {
             return typeof webPageId !== "string" || webPageId.trim().length === 0
         }
 
-        // Unknown link type or missing type = empty
-        return true
+        if (type === "link") {
+            if ("value" in record) return isEmptyLinkValue(record.value)
+            return isEmptyLinkValue({
+                url: record.url,
+                href: record.href,
+                path: record.path,
+                pageId: record.pageId,
+                webPageId: record.webPageId,
+            })
+        }
+
+        if ("url" in record) {
+            return typeof record.url !== "string" || record.url.trim().length === 0
+        }
+        if ("href" in record) {
+            return typeof record.href !== "string" || record.href.trim().length === 0
+        }
+        if ("path" in record) {
+            return typeof record.path !== "string" || record.path.trim().length === 0
+        }
+        if ("webPageId" in record) {
+            return typeof record.webPageId !== "string" || record.webPageId.trim().length === 0
+        }
+        if ("pageId" in record) {
+            return typeof record.pageId !== "string" || record.pageId.trim().length === 0
+        }
+        if ("value" in record) {
+            return isEmptyLinkValue(record.value)
+        }
+
+        // Non-link objects should not be treated as empty links.
+        return false
     }
 
     // Scan component instances only from the first breakpoint frame
@@ -2626,24 +3379,68 @@ async function checkBrokenInternalLinks(nodes: AllNodes): Promise<CheckResult> {
         // Skip nodes inside component definitions (the components folder)
         if (nodes.nodesInAnyVariant.has(nodeId)) continue
 
-        const typedControls = (node as AnyNode).typedControls as Record<string, unknown> | undefined
-        if (!typedControls) continue
+        const explicitLinkCandidates: unknown[] = []
 
-        for (const [, control] of Object.entries(typedControls)) {
+        if ((node as AnyNode).link !== undefined) {
+            explicitLinkCandidates.push((node as AnyNode).link)
+        }
+
+        const typedControls = ((node as AnyNode).typedControls ?? {}) as Record<string, unknown>
+        for (const control of Object.values(typedControls)) {
             if (typeof control !== "object" || control === null) continue
-
-            const controlObj = control as Record<string, unknown>
-            // Check if this is a link control
-            if (controlObj.type !== "link") continue
-
-            const linkValue = controlObj.value
-            if (isEmptyLinkValue(linkValue)) {
-                // Only flag once per component instance
-                if (!flaggedComponentIds.has(nodeId)) {
-                    flagged.push({ label: getNodeName(node as AnyNode), nodeId })
-                    flaggedComponentIds.add(nodeId)
-                }
+            const record = control as Record<string, unknown>
+            const typeValue = typeof record.type === "string" ? record.type.toLowerCase() : ""
+            if (typeValue === "link" || typeValue === "url" || typeValue === "webpage") {
+                explicitLinkCandidates.push("value" in record ? record.value : record)
             }
+        }
+
+        const controls = ((node as AnyNode).controls ?? {}) as Record<string, unknown>
+        for (const control of Object.values(controls)) {
+            if (typeof control !== "object" || control === null) continue
+            const record = control as Record<string, unknown>
+            const typeValue = typeof record.type === "string" ? record.type.toLowerCase() : ""
+            if (typeValue === "link" || typeValue === "url" || typeValue === "webpage") {
+                explicitLinkCandidates.push("value" in record ? record.value : record)
+            }
+        }
+
+        const collectStructuredLinks = (input: unknown, depth: number, seen: WeakSet<object>): void => {
+            if (depth > 6 || input === null || input === undefined) return
+            if (typeof input !== "object") return
+
+            const obj = input as object
+            if (seen.has(obj)) return
+            seen.add(obj)
+
+            if (Array.isArray(input)) {
+                for (const entry of input) collectStructuredLinks(entry, depth + 1, seen)
+                return
+            }
+
+            const record = input as Record<string, unknown>
+            const typeValue = typeof record.type === "string" ? record.type.toLowerCase() : ""
+            const isLinkType = typeValue === "link" || typeValue === "url" || typeValue === "webpage"
+            const hasExplicitLinkFields = "url" in record || "href" in record || "path" in record || "webPageId" in record || "pageId" in record
+            if (isLinkType || hasExplicitLinkFields) {
+                explicitLinkCandidates.push("value" in record ? record.value : record)
+            }
+
+            for (const nested of Object.values(record)) {
+                collectStructuredLinks(nested, depth + 1, seen)
+            }
+        }
+
+        const seen = new WeakSet<object>()
+        collectStructuredLinks((node as AnyNode).props, 0, seen)
+        collectStructuredLinks((node as AnyNode).properties, 0, seen)
+        collectStructuredLinks((node as AnyNode).componentProperties, 0, seen)
+
+        const hasEmptyLink = explicitLinkCandidates.some((candidate) => isEmptyLinkValue(candidate))
+
+        if (hasEmptyLink && !flaggedComponentIds.has(nodeId)) {
+            flagged.push({ label: getNodeName(node as AnyNode), nodeId })
+            flaggedComponentIds.add(nodeId)
         }
     }
 
@@ -2651,6 +3448,65 @@ async function checkBrokenInternalLinks(nodes: AllNodes): Promise<CheckResult> {
         return makeCheck(id, label, "pass", "No components with empty link variables", [], true)
     }
     return makeCheck(id, label, "warning", `${flagged.length} component(s) have an empty link variable`, flagged, true)
+}
+
+async function checkLinksTo404Page(nodes: AllNodes): Promise<CheckResult> {
+    const id = "links-to-404"
+    const label = "Links to 404 Page"
+
+    const page404 = nodes.pages.find((page) => {
+        const path = typeof page.path === "string" ? page.path : ""
+        const name = typeof page.name === "string" ? page.name : ""
+        return /404/i.test(path) || /404/i.test(name)
+    })
+
+    const page404Id = page404 ? (page404.id as string) : null
+    const page404Path = page404
+        ? (typeof page404.path === "string" ? page404.path : "").toLowerCase().replace(/^\//, "")
+        : null
+
+    function linksTo404(value: unknown): boolean {
+        if (typeof value === "string") {
+            if (page404Path === null) return false
+            const normalized = value.toLowerCase().replace(/^\//, "")
+            return normalized === page404Path
+        }
+        if (typeof value !== "object" || value === null) return false
+        const record = value as Record<string, unknown>
+        // Internal page link: { pageId: "..." }
+        if (page404Id && record.pageId === page404Id) return true
+        // Component link control: { type: "webPage", webPageId: "..." }
+        if (page404Id && record.type === "webPage" && record.webPageId === page404Id) return true
+        return false
+    }
+
+    const flagged: Array<CheckItem> = []
+    const flaggedIds = new Set<string>()
+
+    const allNodes = [
+        ...(nodes.frameNodes as ReadonlyArray<AnyNode>),
+        ...nodes.textNodes,
+        ...nodes.componentNodes,
+    ]
+
+    for (const node of allNodes) {
+        const nodeId = node.id as string
+        if (flaggedIds.has(nodeId)) continue
+        if (nodes.nodesInNonFirstBreakpoints.has(nodeId)) continue
+        if (nodes.nodesInAnyVariant.has(nodeId)) continue
+        const links = collectNodeLinkValues(node)
+        for (const linkValue of links) {
+            if (!linksTo404(linkValue)) continue
+            flagged.push({ label: getNodeName(node), nodeId })
+            flaggedIds.add(nodeId)
+            break
+        }
+    }
+
+    if (flagged.length === 0) {
+        return makeCheck(id, label, "pass", "No elements link to the 404 page", [], true)
+    }
+    return makeCheck(id, label, "fail", `${flagged.length} element(s) link to the 404 page`, flagged, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -2662,6 +3518,36 @@ async function checkResponsiveLayout(nodes: AllNodes): Promise<CheckResult> {
     const label = "Fixed Widths"
     const fixed: Array<CheckItem> = []
     const seenNames = new Set<string>()
+
+    function isFlexibleWidthValue(value: unknown): boolean {
+        if (typeof value !== "string") return false
+        const normalized = value.trim().toLowerCase()
+        if (normalized.length === 0) return false
+        if (normalized === "auto" || normalized === "fit-content" || normalized === "fill" || normalized === "fill-container") return true
+        if (/^-?\d+(?:\.\d+)?fr$/.test(normalized)) return true
+        if (normalized.includes("fr")) return true
+        if (normalized.includes("%")) return true
+        return false
+    }
+
+    function hasFlexibleWidthSizingHint(frameAny: AnyNode): boolean {
+        if (isFlexibleWidthValue(frameAny.width)) return true
+
+        const sizingHints: unknown[] = [
+            frameAny.widthType,
+            frameAny.widthSizing,
+            frameAny.horizontalSizing,
+            (frameAny.sizing as Record<string, unknown> | undefined)?.horizontal,
+            (frameAny.layout as Record<string, unknown> | undefined)?.horizontalSizing,
+            (frameAny.constraints as Record<string, unknown> | undefined)?.horizontal,
+        ]
+
+        return sizingHints.some((hint) => {
+            if (typeof hint !== "string") return false
+            const normalized = hint.trim().toLowerCase()
+            return normalized.includes("auto") || normalized.includes("hug") || normalized.includes("fill") || normalized.includes("fr")
+        })
+    }
     
     // Build a set of frameNode IDs to check if parents are frames
     const frameNodeIds = new Set<string>()
@@ -2681,6 +3567,7 @@ async function checkResponsiveLayout(nodes: AllNodes): Promise<CheckResult> {
 
         // Skip elements with max/min width constraints — those are intentional, not "fixed"
         if (frameAny.maxWidth != null || frameAny.minWidth != null) continue
+        if (hasFlexibleWidthSizingHint(frameAny)) continue
 
         const width = frameAny.width
         if (typeof width !== "string") continue
@@ -2843,7 +3730,6 @@ async function checkPageSettings(_nodes: AllNodes): Promise<CheckResult> {
     const id = "page-settings"
     const label = "Publish Metadata"
     const missingMetadataItems: Array<CheckItem> = []
-    const unreachableItems: Array<CheckItem> = []
 
     let publishInfo: PublishInfo | null = null
     try {
@@ -2858,83 +3744,61 @@ async function checkPageSettings(_nodes: AllNodes): Promise<CheckResult> {
             id,
             label,
             "fail",
-            "Site has not been published yet. Publish the site to verify favicon, icons, social preview, and metadata.",
+            "Site has not been published yet. Publish the site to verify favicon, social preview, site title, and site description.",
             [
                 { label: "Favicon not set", nodeId: null, badge: "unpublished" },
-                { label: "Icons not set", nodeId: null, badge: "unpublished" },
                 { label: "Social preview not set", nodeId: null, badge: "unpublished" },
-                { label: "Metadata not set", nodeId: null, badge: "unpublished" },
+                { label: "Site title not set", nodeId: null, badge: "unpublished" },
+                { label: "Site description not set", nodeId: null, badge: "unpublished" },
             ],
             true,
         )
     }
 
-    const inspectedEnvironments: Array<PublishedEnvironmentName> = []
-    const unreachableEnvironments: Array<PublishedEnvironmentName> = []
+    const targetEnvironment = environments.find((entry) => entry.environment === "production") ?? environments[0]
 
-    for (const environment of environments) {
-        try {
-            const metadata = await fetchPublishedMetadataInfo(environment.url)
-            inspectedEnvironments.push(environment.environment)
-
-            if (!metadata.hasFavicon) {
-                missingMetadataItems.push({ label: "Favicon not set", nodeId: null, badge: environment.environment })
-            }
-            if (!metadata.hasIcons) {
-                missingMetadataItems.push({ label: "Icons not set", nodeId: null, badge: environment.environment })
-            }
-            if (!metadata.hasSocialPreview) {
-                missingMetadataItems.push({ label: "Social preview not set", nodeId: null, badge: environment.environment })
-            }
-            if (!metadata.hasMetadata) {
-                missingMetadataItems.push({ label: "Metadata not set", nodeId: null, badge: environment.environment })
-            }
-        } catch (error: unknown) {
-            unreachableEnvironments.push(environment.environment)
-            const message = error instanceof Error && error.message.trim().length > 0
-                ? error.message.trim()
-                : "URL metadata provider request failed"
-            unreachableItems.push({ label: `Could not inspect URL metadata: ${message}`, nodeId: null, badge: environment.environment })
-        }
-    }
-
-    const inspectedCount = inspectedEnvironments.length
-    const inspectedLabel = inspectedCount === 1 ? `${inspectedCount} environment` : `${inspectedCount} environments`
-    const unreachableLabel = unreachableEnvironments.length > 0
-        ? `; could not inspect ${unreachableEnvironments.join(", ")}`
-        : ""
-
-    if (inspectedCount === 0 && unreachableEnvironments.length > 0) {
+    let metadata: PublishedMetadataInfo
+    try {
+        metadata = await fetchPublishedMetadataInfo(targetEnvironment.url)
+    } catch (error: unknown) {
+        const message = error instanceof Error && error.message.trim().length > 0
+            ? error.message.trim()
+            : "URL metadata provider request failed"
         return makeCheck(
             id,
             label,
             "warning",
-            `Could not inspect published metadata in ${unreachableEnvironments.join(", ")}. This usually means cross-origin fetch is blocked (CORS) or the environment requires access/authentication.`,
-            unreachableItems,
+            `Could not inspect published metadata in ${targetEnvironment.environment}. This usually means cross-origin fetch is blocked (CORS) or the environment requires access/authentication.`,
+            [{ label: `Could not inspect URL metadata: ${message}`, nodeId: null, badge: targetEnvironment.environment }],
             true,
         )
     }
 
+    if (!metadata.hasFavicon) {
+        missingMetadataItems.push({ label: "Favicon not set", nodeId: null, badge: targetEnvironment.environment })
+    }
+    if (!metadata.hasSocialPreview) {
+        missingMetadataItems.push({ label: "Social preview not set", nodeId: null, badge: targetEnvironment.environment })
+    }
+    if (metadata.hasDefaultTitle) {
+        missingMetadataItems.push({ label: "Site title is still default (Home)", nodeId: null, badge: targetEnvironment.environment })
+    } else if (!metadata.hasTitle) {
+        missingMetadataItems.push({ label: "Site title not set", nodeId: null, badge: targetEnvironment.environment })
+    }
+    if (!metadata.hasDescription) {
+        missingMetadataItems.push({ label: "Site description not set", nodeId: null, badge: targetEnvironment.environment })
+    }
+
     if (missingMetadataItems.length === 0) {
-        if (unreachableItems.length > 0) {
-            return makeCheck(
-                id,
-                label,
-                "warning",
-                `Metadata looks complete in ${inspectedLabel}; could not inspect ${unreachableEnvironments.join(", ")} (likely CORS/private access).`,
-                unreachableItems,
-                true,
-            )
-        }
-        return makeCheck(id, label, "pass", `Favicon, icons, social preview, and metadata are set in ${inspectedLabel}.`, [], true)
+        return makeCheck(id, label, "pass", `Favicon, social preview, site title, and site description are set in ${targetEnvironment.environment}.`, [], true)
     }
 
     return makeCheck(
         id,
         label,
         "fail",
-        `${missingMetadataItems.length} publish metadata issue(s) found in ${inspectedLabel}${unreachableLabel}.`,
-        [...missingMetadataItems, ...unreachableItems],
+        `${missingMetadataItems.length} publish metadata issue(s) found in ${targetEnvironment.environment}.`,
+        missingMetadataItems,
         true,
     )
 }
@@ -3087,11 +3951,35 @@ async function checkActiveLinks(nodes: AllNodes): Promise<CheckResult> {
         return normalized
     }
 
-    function getInternalLinkPath(node: AnyNode): string | null {
-        function fromUnknown(value: unknown): string | null {
+    function tokenizeSectionWords(value: string): string[] {
+        return value
+            .trim()
+            .toLowerCase()
+            .replace(/^[#/]+/, "")
+            .split(/[-_\s/]+/)
+            .map((word) => word.trim())
+            .filter((word) => word.length > 1)
+    }
+
+    type InternalLinkData = {
+        readonly path: string
+        readonly sectionWords: ReadonlyArray<string>
+    }
+
+    function getInternalLinkData(node: AnyNode): InternalLinkData | null {
+        function fromUnknown(value: unknown): InternalLinkData | null {
             if (typeof value === "string") {
-                const normalized = normalizeInternalPath(value)
-                if (normalized.startsWith("/") && !normalized.startsWith("//")) return normalized
+                const trimmed = value.trim()
+                if (trimmed.length === 0) return null
+
+                const [pathPart, hashPart] = trimmed.split("#", 2)
+                const normalized = normalizeInternalPath(pathPart)
+                if (normalized.startsWith("/") && !normalized.startsWith("//")) {
+                    return {
+                        path: normalized,
+                        sectionWords: hashPart ? tokenizeSectionWords(hashPart) : [],
+                    }
+                }
                 return null
             }
             if (typeof value !== "object" || value === null) return null
@@ -3101,14 +3989,25 @@ async function checkActiveLinks(nodes: AllNodes): Promise<CheckResult> {
             if (typeof record.pageId === "string") {
                 const page = nodes.pages.find((p) => p.id === record.pageId)
                 if (page && typeof (page as AnyNode).path === "string") {
-                    return normalizeInternalPath((page as AnyNode).path as string)
+                    const sectionRaw = [record.section, record.anchor, record.hash, record.fragment, record.targetId]
+                        .find((entry) => typeof entry === "string") as string | undefined
+                    return {
+                        path: normalizeInternalPath((page as AnyNode).path as string),
+                        sectionWords: sectionRaw ? tokenizeSectionWords(sectionRaw) : [],
+                    }
                 }
             }
 
             for (const candidate of [record.path, record.url, record.href, record.slug, record.value]) {
                 if (typeof candidate !== "string") continue
-                const normalized = normalizeInternalPath(candidate)
-                if (normalized.startsWith("/") && !normalized.startsWith("//")) return normalized
+                const [candidatePath, candidateHash] = candidate.split("#", 2)
+                const normalized = normalizeInternalPath(candidatePath)
+                if (normalized.startsWith("/") && !normalized.startsWith("//")) {
+                    return {
+                        path: normalized,
+                        sectionWords: candidateHash ? tokenizeSectionWords(candidateHash) : [],
+                    }
+                }
             }
 
             return null
@@ -3142,7 +4041,7 @@ async function checkActiveLinks(nodes: AllNodes): Promise<CheckResult> {
             }
         }
 
-        function searchInObject(input: unknown, depth: number): string | null {
+        function searchInObject(input: unknown, depth: number): InternalLinkData | null {
             if (depth > 2) return null
             if (typeof input !== "object" || input === null) return null
             const record = input as Record<string, unknown>
@@ -3200,21 +4099,24 @@ async function checkActiveLinks(nodes: AllNodes): Promise<CheckResult> {
         // Only check nodes in the primary breakpoint and primary variant
         if (nodes.nodesInNonFirstBreakpoints.has(node.id)) return
         if (nodes.nodesInNonPrimaryVariants.has(node.id)) return
-        const linkPath = getInternalLinkPath(node)
-        if (!linkPath) return
+        const linkData = getInternalLinkData(node)
+        if (!linkData) return
 
         checkedCount++
 
-        const slugWords = pageSlugWords.get(linkPath)
-        // If we can't map to a known page, can't evaluate — skip flagging but still count
-        if (!slugWords || slugWords.length === 0) return
+        const slugWords = pageSlugWords.get(linkData.path) ?? []
+        const sectionWords = linkData.sectionWords
+        const wordsToMatch = Array.from(new Set([...slugWords, ...sectionWords]))
+
+        // If we can't map to a known page and no section text is provided, we can't evaluate.
+        if (wordsToMatch.length === 0) return
 
         const nodeText = useNodeText
             ? (await getNodeText(node)).toLowerCase().trim()
             : getNodeName(node).toLowerCase().trim()
         if (!nodeText) return
 
-        const hasMatch = slugWords.some((word) => nodeText.includes(word.toLowerCase()))
+        const hasMatch = wordsToMatch.some((word) => nodeText.includes(word.toLowerCase()))
         if (!hasMatch) {
             const preview = nodeText.length > 30 ? nodeText.slice(0, 30) + "…" : nodeText
             flagged.push({ label: preview, nodeId: node.id as string })
@@ -3266,7 +4168,14 @@ function checkNaming(nodes: AllNodes): CheckResult {
 }
 
 function checkComponentUpToDate(): CheckResult {
-    return skipCheck("component-up-to-date", "Component Up to Date", "Framer Plugin API v3 does not expose component update status. Check for component updates manually in the Assets panel.")
+    return makeCheck(
+        "component-up-to-date",
+        "Component Up to Date",
+        "warning",
+        "Automatic update-state detection is limited by Framer Plugin API. External components are still detected via insertURL and included in asset checks.",
+        [],
+        true,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -3319,39 +4228,25 @@ async function checkH1Tags(nodes: AllNodes): Promise<CheckResult> {
         return skipCheck(id, label, "No pages found")
     }
 
-    const publishedUrl = await getPublishedSiteUrl()
-    const baseUrl = publishedUrl ? extractBaseUrl(publishedUrl) : null
+    const pageAudits = await getPublishedTagAuditsByPage(nodes)
+    const successfulAudits = pageAudits.filter((audit) => audit.tagInfo !== null)
 
-    if (!baseUrl) {
-        return makeCheck(id, label, "warning", "Site is not published. Publish your site to run this check.", [], true)
-    }
-
-    let fetchedCount = 0
-    for (const page of nodes.pages as ReadonlyArray<AnyNode>) {
-        const pageName =
-            ((page as Record<string, unknown>).name as string | undefined) ||
-            ((page as Record<string, unknown>).path as string | undefined) ||
-            page.id
-        const pagePath = typeof (page as any).path === "string" ? (page as any).path as string : "/"
-        const frameNodeId = nodes.breakpointFramesByPageId.get(page.id)?.[0] ?? null
-        try {
-            const pageUrl = buildPageUrl(baseUrl, pagePath)
-            const html = await fetchPublishedHtmlCached(pageUrl)
-            const tagInfo = extractPublishedTagInfo(html)
-            fetchedCount++
-            if (tagInfo.h1Count === 0) {
-                flagged.push({ label: `'${pageName}': missing H1 tag`, nodeId: frameNodeId })
-            }
-        } catch {
-            // page not reachable — skip silently
+    for (const audit of successfulAudits) {
+        const tagInfo = audit.tagInfo as PublishedTagInfo
+        if (!tagInfo.hasH1) {
+            flagged.push({ label: `'${audit.pageName}': missing H1 tag`, nodeId: audit.frameNodeId })
         }
     }
 
-    if (fetchedCount === 0) {
-        return makeCheck(id, label, "warning", "Could not fetch any published pages. Ensure the site is published and reachable.", [], true)
+    if (successfulAudits.length === 0) {
+        const firstError = pageAudits.find((audit) => audit.error !== null)?.error
+        const detail = firstError
+            ? `Could not fetch published page HTML tags. ${firstError}`
+            : "Could not fetch published page HTML tags for any page."
+        return makeCheck(id, label, "warning", detail, [], true)
     }
     if (flagged.length === 0) {
-        return makeCheck(id, label, "pass", `All ${fetchedCount} page(s) have an H1 tag`, [], true)
+        return makeCheck(id, label, "pass", `All ${successfulAudits.length} page(s) have an H1 tag`, [], true)
     }
     return makeCheck(id, label, "fail", `${flagged.length} page(s) are missing an H1 tag`, flagged, true)
 }
@@ -3361,44 +4256,38 @@ async function checkHeadingHierarchy(nodes: AllNodes): Promise<CheckResult> {
     const label = "Heading Hierarchy"
     const flagged: Array<CheckItem> = []
 
-    const publishedUrl = await getPublishedSiteUrl()
-    const baseUrl = publishedUrl ? extractBaseUrl(publishedUrl) : null
-
-    if (!baseUrl || nodes.pages.length === 0) {
-        return makeCheck(id, label, "warning", "Site is not published. Publish your site to run this check.", [], true)
+    if (nodes.pages.length === 0) {
+        return skipCheck(id, label, "No pages found")
     }
 
-    // Build a map from trimmed text content → Framer text node ID for matching headings back to nodes.
-    const textNodeByContent = new Map<string, string>()
-    for (const tn of nodes.textNodes as ReadonlyArray<AnyNode>) {
-        const chars = ((tn as any).characters ?? (tn as any).text ?? "").trim()
-        if (chars.length > 0) textNodeByContent.set(chars, tn.id)
-    }
+    const pageAudits = await getPublishedTagAuditsByPage(nodes)
+    const successfulAudits = pageAudits.filter((audit) => audit.tagInfo !== null)
 
-    let fetchedCount = 0
-    for (const page of nodes.pages as ReadonlyArray<AnyNode>) {
-        const pageName = getPageDisplayLabel(page) ?? "Untitled page"
-        const pagePath = typeof (page as any).path === "string" ? (page as any).path as string : "/"
-        const frameNodeId = nodes.breakpointFramesByPageId.get(page.id)?.[0] ?? null
-        try {
-            const pageUrl = buildPageUrl(baseUrl, pagePath)
-            const html = await fetchPublishedHtmlCached(pageUrl)
-            const tagInfo = extractPublishedTagInfo(html)
-            fetchedCount++
-            const firstH1Index = tagInfo.headings.findIndex((h) => h.tag === "h1")
-            const firstH2Index = tagInfo.headings.findIndex((h) => h.tag === "h2")
-            if (firstH1Index !== -1 && firstH2Index !== -1 && firstH2Index < firstH1Index) {
-                const h2 = tagInfo.headings[firstH2Index]
-                const matchedNodeId = textNodeByContent.get(h2.text) ?? frameNodeId
-                flagged.push({ label: `'${pageName}': H2 "${h2.text}" appears before H1`, nodeId: matchedNodeId })
-            }
-        } catch {
-            // page not reachable — skip silently
+    for (const audit of successfulAudits) {
+        const tagInfo = audit.tagInfo as PublishedTagInfo
+        const hierarchy = tagInfo.headingHierarchy
+        if (hierarchy.length === 0) continue
+
+        // Check if any H2 appears before the first H1
+        const firstH1Index = hierarchy.findIndex((tag) => tag === "h1")
+        const firstH2Index = hierarchy.findIndex((tag) => tag === "h2")
+
+        // If H2 appears before H1 (or H1 is missing), it's a violation
+        // Missing H1 is OK, but H2 before H1 is not
+        if (firstH1Index !== -1 && firstH2Index !== -1 && firstH2Index < firstH1Index) {
+            flagged.push({
+                label: `'${audit.pageName}': <h2> appears before <h1>`,
+                nodeId: audit.frameNodeId,
+            })
         }
     }
 
-    if (fetchedCount === 0) {
-        return makeCheck(id, label, "warning", "Could not fetch any published pages. Ensure the site is published and reachable.", [], true)
+    if (successfulAudits.length === 0) {
+        const firstError = pageAudits.find((audit) => audit.error !== null)?.error
+        const detail = firstError
+            ? `Could not fetch published page HTML tags. ${firstError}`
+            : "Could not fetch published page HTML tags for any page."
+        return makeCheck(id, label, "warning", detail, [], true)
     }
     if (flagged.length === 0) {
         return makeCheck(id, label, "pass", "Heading hierarchy is correct on all pages", [], true)
@@ -3434,6 +4323,14 @@ async function checkOverflow(nodes: AllNodes): Promise<CheckResult> {
         return null
     }
 
+    function isFixedDimensionValue(value: unknown): boolean {
+        if (typeof value === "number" && Number.isFinite(value)) return true
+        if (typeof value !== "string") return false
+        const normalized = value.trim().toLowerCase()
+        if (normalized.length === 0) return false
+        return /^\d+(?:\.\d+)?px$/.test(normalized)
+    }
+
     async function getCalculatedSize(node: AnyNode): Promise<{ width: number | null; height: number | null }> {
         const rect = await framer.getRect(node.id).catch(() => null)
         const widthFromRect = typeof rect?.width === "number" && Number.isFinite(rect.width) ? rect.width : null
@@ -3453,8 +4350,13 @@ async function checkOverflow(nodes: AllNodes): Promise<CheckResult> {
 
         if (childSize.width === null || childSize.height === null || parentSize.width === null || parentSize.height === null) continue
 
-        const exceedsWidth = childSize.width > parentSize.width + EPSILON
-        const exceedsHeight = childSize.height > parentSize.height + EPSILON
+        const canCheckWidth = isFixedDimensionValue(node.width) && isFixedDimensionValue(parentNode.width)
+        const canCheckHeight = isFixedDimensionValue(node.height) && isFixedDimensionValue(parentNode.height)
+
+        if (!canCheckWidth && !canCheckHeight) continue
+
+        const exceedsWidth = canCheckWidth && childSize.width > parentSize.width + EPSILON
+        const exceedsHeight = canCheckHeight && childSize.height > parentSize.height + EPSILON
 
         if (!exceedsWidth && !exceedsHeight) continue
 
@@ -3951,6 +4853,84 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
         return Array.from(entries.entries()).map(([key, value]) => ({ key, value }))
     }
 
+    const extractVectorControlEntriesGlobal = (record: Record<string, unknown>): ReadonlyArray<{ key: string; value: unknown }> => {
+        const entries = new Map<string, unknown>()
+        const seenObjects = new WeakSet<object>()
+        const VECTOR_KEY_RE = /(vector(set)?item|icon|glyph)/i
+        const ROOT_BAG_KEYS = new Set(["node", "typedControls", "controls", "componentProperties", "props", "properties"])
+
+        const addEntry = (path: string, rawValue: unknown): void => {
+            const normalized = path.replace(/\.(value|defaultValue)$/i, "")
+            if (ROOT_BAG_KEYS.has(normalized)) return
+            if (/\.(typedControls|controls|componentProperties|props|properties)$/i.test(normalized)) return
+            if (!entries.has(normalized)) entries.set(normalized, rawValue)
+        }
+
+        const visit = (value: unknown, path: string, depth: number): void => {
+            if (depth > 6 || value === null || value === undefined) return
+
+            if (typeof value === "object") {
+                const obj = value as object
+                if (seenObjects.has(obj)) return
+                seenObjects.add(obj)
+
+                if (Array.isArray(value)) {
+                    for (let index = 0; index < value.length; index++) {
+                        visit(value[index], `${path}[${index}]`, depth + 1)
+                    }
+                    return
+                }
+
+                const recordValue = value as Record<string, unknown>
+                const recordType = typeof recordValue.type === "string" ? recordValue.type.toLowerCase() : ""
+                if (recordType === "vectorsetitem" || recordType === "vectorset") {
+                    const v = "value" in recordValue ? recordValue.value : value
+                    addEntry(path, v)
+                }
+
+                for (const [key, nested] of Object.entries(recordValue)) {
+                    const nextPath = path.length > 0 ? `${path}.${key}` : key
+                    if (VECTOR_KEY_RE.test(key)) addEntry(nextPath, nested)
+                    visit(nested, nextPath, depth + 1)
+                }
+                return
+            }
+
+            if (typeof value === "string" && VECTOR_KEY_RE.test(path)) {
+                addEntry(path, value)
+            }
+        }
+
+        const bags: Array<{ name: string; value: unknown }> = [
+            { name: "node", value: record },
+            { name: "typedControls", value: record.typedControls },
+            { name: "controls", value: record.controls },
+            { name: "componentProperties", value: record.componentProperties },
+            { name: "props", value: record.props },
+            { name: "properties", value: record.properties },
+        ]
+
+        for (const bag of bags) {
+            visit(bag.value, bag.name, 0)
+        }
+
+        return Array.from(entries.entries()).map(([key, value]) => ({ key, value }))
+    }
+
+    const isEmptyVectorValueGlobal = (value: unknown): boolean => {
+        if (value === undefined || value === null) return true
+        if (typeof value === "string") return value.trim().length === 0
+        if (typeof value !== "object") return false
+
+        const record = value as Record<string, unknown>
+        if (typeof record.id === "string" && record.id.trim().length > 0) return false
+        if (typeof record.value === "string" && record.value.trim().length > 0) return false
+        if (typeof record.insertUrl === "string" && record.insertUrl.trim().length > 0) return false
+        if (typeof record.insertURL === "string" && record.insertURL.trim().length > 0) return false
+        if ("value" in record) return isEmptyVectorValueGlobal(record.value)
+        return Object.keys(record).length === 0
+    }
+
     // ── 1. Unused design & package components ───────────────────────────────
     // Two identification systems exist:
     //   • Project folder (design components): matched via componentIdentifier
@@ -4290,7 +5270,7 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
             return entryKey.endsWith(`.${candidateKey}`) || entryKey.endsWith(`[${candidateKey}]`)
         }
 
-        const instanceHasControlValue = (instance: AnyNode, candidateKey: string): boolean => {
+        const instanceHasLinkControlValue = (instance: AnyNode, candidateKey: string): boolean => {
             const raw = instance as Record<string, unknown>
             const entries = (extractLinkControlEntriesGlobal(raw) as ReadonlyArray<{ key: string; value: unknown }>)
             for (const entry of entries) {
@@ -4306,16 +5286,32 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
             return false
         }
 
+        const instanceHasVectorControlValue = (instance: AnyNode, candidateKey: string): boolean => {
+            const raw = instance as Record<string, unknown>
+            const entries = (extractVectorControlEntriesGlobal(raw) as ReadonlyArray<{ key: string; value: unknown }>)
+            for (const entry of entries) {
+                if (!matchesControlKey(candidateKey, entry.key)) continue
+                if (typeof entry.value === "object" && entry.value !== null) {
+                    const record = entry.value as Record<string, unknown>
+                    const vectorValue = "value" in record ? record.value : entry.value
+                    if (!isEmptyVectorValueGlobal(vectorValue)) return true
+                } else if (!isEmptyVectorValueGlobal(entry.value)) {
+                    return true
+                }
+            }
+            return false
+        }
+
         const usedLinkControlKeys = new Set<string>()
         for (const controlKey of declaredLinkControls) {
-            if (matchingInstances.some((instance) => instanceHasControlValue(instance, controlKey))) {
+            if (matchingInstances.some((instance) => instanceHasLinkControlValue(instance, controlKey))) {
                 usedLinkControlKeys.add(controlKey)
             }
         }
 
         const usedVectorControlKeys = new Set<string>()
         for (const controlKey of declaredVectorControls) {
-            if (matchingInstances.some((instance) => instanceHasControlValue(instance, controlKey))) {
+            if (matchingInstances.some((instance) => instanceHasVectorControlValue(instance, controlKey))) {
                 usedVectorControlKeys.add(controlKey)
             }
         }
@@ -4510,7 +5506,7 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
 async function runAudit(onProgress?: (done: number, total: number) => void, enablePageSpeed: boolean = true): Promise<AuditReport> {
     const nodes = await fetchAllNodes()
 
-    const TOTAL = 30
+    const TOTAL = 28
     let completed = 0
 
     function track<T>(p: Promise<T> | T): Promise<T> {
@@ -4552,11 +5548,10 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         // Links
         mailtoTel,
         brokenInternal,
+        linksTo404,
         activeLinks,
         contactFormSendTo,
         // CMS
-        cmsUsage,
-        cmsFieldNaming,
         duplicateCms,
         // Performance
         pageSpeed,
@@ -4585,10 +5580,9 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         track(checkBreakpointWidths(nodes)),
         track(checkMailtoTelLinks(nodes)),
         track(checkBrokenInternalLinks(nodes)),
+        track(checkLinksTo404Page(nodes)),
         track(checkActiveLinks(nodes)),
         track(checkContactFormSendTo(nodes)),
-        track(checkCmsUsage(nodes)),
-        track(checkCmsFieldNamingConvention(nodes)),
         track(checkDuplicateCmsContent(nodes)),
         enablePageSpeed ? track(checkGooglePageSpeed(nodes)) : track(skipCheck("google-pagespeed", "Google PageSpeed", "Check disabled")),
     ])
@@ -4622,12 +5616,12 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         {
             id: "links",
             label: "Links",
-            checks: [mailtoTel, brokenInternal, activeLinks, contactFormSendTo],
+            checks: [mailtoTel, brokenInternal, linksTo404, activeLinks, contactFormSendTo],
         },
         {
             id: "cms",
             label: "CMS",
-            checks: [cmsUsage, cmsFieldNaming, duplicateCms],
+            checks: [duplicateCms],
         },
         {
             id: "performance",
@@ -4678,10 +5672,9 @@ async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = t
         case "breakpoint-widths": return checkBreakpointWidths(nodes)
         case "mailto-tel-links": return checkMailtoTelLinks(nodes)
         case "broken-internal-links": return checkBrokenInternalLinks(nodes)
+        case "links-to-404": return checkLinksTo404Page(nodes)
         case "active-links": return checkActiveLinks(nodes)
         case "contact-form": return checkContactFormSendTo(nodes)
-        case "cms-usage": return checkCmsUsage(nodes)
-        case "cms-field-naming": return checkCmsFieldNamingConvention(nodes)
         case "duplicate-cms-content": return checkDuplicateCmsContent(nodes)
         case "google-pagespeed":
             return enablePageSpeed
