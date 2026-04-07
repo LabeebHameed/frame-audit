@@ -820,6 +820,59 @@ function getPublishedUrlFromInfo(publishInfo: PublishInfo | null): string | null
     return getPublishedEnvironmentUrls(publishInfo)[0]?.url ?? null
 }
 
+function getPublishedUrlFromUnknownPublishInfo(publishInfo: unknown): string | null {
+    if (isNonEmptyString(publishInfo)) {
+        const candidate = publishInfo.trim()
+        return /^https?:\/\//i.test(candidate) ? candidate : null
+    }
+
+    const fromTypedInfo = getPublishedUrlFromInfo((publishInfo as PublishInfo | null) ?? null)
+    if (fromTypedInfo && /^https?:\/\//i.test(fromTypedInfo)) {
+        return fromTypedInfo
+    }
+
+    if (publishInfo === null || typeof publishInfo !== "object") return null
+
+    const preferredKeyPattern = /currentpageurl|publishedurl|productionurl|stagingurl|url|href/i
+    const seen = new WeakSet<object>()
+    const queue: Array<unknown> = [publishInfo]
+    const discoveredPreferred: string[] = []
+    const discoveredAny: string[] = []
+
+    while (queue.length > 0) {
+        const value = queue.shift()
+        if (value === null || typeof value !== "object") continue
+
+        const obj = value as object
+        if (seen.has(obj)) continue
+        seen.add(obj)
+
+        if (Array.isArray(value)) {
+            for (const entry of value) queue.push(entry)
+            continue
+        }
+
+        for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+            if (isNonEmptyString(nested)) {
+                const candidate = nested.trim()
+                if (/^https?:\/\//i.test(candidate)) {
+                    if (preferredKeyPattern.test(key)) {
+                        discoveredPreferred.push(candidate)
+                    } else {
+                        discoveredAny.push(candidate)
+                    }
+                }
+            }
+
+            if (nested && typeof nested === "object") {
+                queue.push(nested)
+            }
+        }
+    }
+
+    return discoveredPreferred[0] ?? discoveredAny[0] ?? null
+}
+
 function stripTrailingSlash(value: string): string {
     return value.replace(/\/+$/, "")
 }
@@ -4762,29 +4815,9 @@ async function checkGooglePageSpeed(_nodes: AllNodes, forceRefresh: boolean = fa
         return skipCheck(id, label, "Could not retrieve published site info. Run PageSpeed manually at pagespeed.web.dev.")
     }
 
-    let publishedUrl: string | undefined = undefined
-    if (publishInfo) {
-        if (typeof publishInfo === "string") {
-            publishedUrl = publishInfo.trim()
-        } else if (typeof publishInfo === "object") {
-            if (publishInfo.production) {
-                if (typeof publishInfo.production.url === "string" && publishInfo.production.url.trim().length > 0) {
-                    publishedUrl = publishInfo.production.url.trim()
-                } else if (typeof publishInfo.production.currentPageUrl === "string" && publishInfo.production.currentPageUrl.trim().length > 0) {
-                    publishedUrl = publishInfo.production.currentPageUrl.trim()
-                }
-            }
-            if (!publishedUrl && publishInfo.staging) {
-                if (typeof publishInfo.staging.url === "string" && publishInfo.staging.url.trim().length > 0) {
-                    publishedUrl = publishInfo.staging.url.trim()
-                } else if (typeof publishInfo.staging.currentPageUrl === "string" && publishInfo.staging.currentPageUrl.trim().length > 0) {
-                    publishedUrl = publishInfo.staging.currentPageUrl.trim()
-                }
-            }
-        }
-    }
+    const publishedUrl = getPublishedUrlFromUnknownPublishInfo(publishInfo)
 
-    if (!publishedUrl || !/^https?:\/\//.test(publishedUrl)) {
+    if (!publishedUrl) {
         return makeCheck(id, label, "warning", "Site is not published or no valid published URL found. Publish your site to run Google PageSpeed.", [], true)
     }
 
