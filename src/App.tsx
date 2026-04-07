@@ -148,32 +148,6 @@ function LockIcon(props: { color: string }): React.ReactElement {
     )
 }
 
-function PageSpeedToggle(props: { enabled: boolean; onChange: (enabled: boolean) => void }): React.ReactElement {
-    return (
-        <button
-            onClick={() => props.onChange(!props.enabled)}
-            style={{
-                background: props.enabled ? "#008CFF" : "rgba(255,255,255,0.08)",
-                border: "none",
-                borderRadius: 5,
-                padding: "5px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                color: props.enabled ? "#FFFFFF" : "rgba(255,255,255,0.5)",
-                transition: "all 0.2s ease",
-                flexShrink: 0,
-            }}
-            title={props.enabled ? "Disable Google PageSpeed check" : "Enable Google PageSpeed check"}
-        >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
-            </svg>
-        </button>
-    )
-}
-
 function RecheckButton(props: { onClick: () => void; disabled: boolean }): React.ReactElement {
     return (
         <button
@@ -528,7 +502,7 @@ const SectionCard = memo(function SectionCard(props: {
                             key={check.id}
                             check={check}
                             theme={props.theme}
-                            onClick={check.status === "warning" || check.status === "fail" ? () => props.onCheckClick(check) : null}
+                            onClick={check.id === "google-pagespeed" || check.status === "warning" || check.status === "fail" ? () => props.onCheckClick(check) : null}
                         />
                     ))}
                 </div>
@@ -684,7 +658,7 @@ function PageSpeedDetailView(props: {
     const colors = THEME_COLORS[props.theme]
     const statusColor = getStatusColor(props.check.status, props.theme)
     const [tab, setTab] = useState<"desktop" | "mobile">("desktop")
-    const data = props.check.pageSpeedData as PageSpeedData
+    const data = props.check.pageSpeedData as PageSpeedData | undefined
 
     const tabStyle = (active: boolean): React.CSSProperties => ({
         flex: 1,
@@ -698,7 +672,7 @@ function PageSpeedDetailView(props: {
         cursor: "pointer",
     })
 
-    const strategyData = tab === "desktop" ? data.desktop : data.mobile
+    const strategyData = data ? (tab === "desktop" ? data.desktop : data.mobile) : null
 
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%" }}>
@@ -733,6 +707,10 @@ function PageSpeedDetailView(props: {
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 180 }}>
                     <SpinnerIcon color={statusColor} />
                     <div style={{ fontSize: 13, color: colors.text.secondary, marginTop: 12 }}>Running Google PageSpeed…</div>
+                </div>
+            ) : !data ? (
+                <div style={{ fontSize: 13, color: colors.text.secondary, textAlign: "center", padding: 24 }}>
+                    No PageSpeed data yet. Use Recheck to run it.
                 </div>
             ) : (
                 <>
@@ -774,7 +752,7 @@ function DetailView(props: {
     const colors = THEME_COLORS[props.theme]
     const statusColor = getStatusColor(props.check.status, props.theme)
 
-    if (props.check.id === "google-pagespeed" && (props.check.pageSpeedData || props.isRunning)) {
+    if (props.check.id === "google-pagespeed") {
         return (
             <PageSpeedDetailView
                 check={props.check}
@@ -2390,7 +2368,7 @@ export function App(): React.ReactElement {
     const [activeTab, setActiveTab] = useState<"results" | "padding">("results")
     const [dismissedItems, setDismissedItems] = useState<Map<string, Set<number>>>(new Map())
     const [scoreVersion, setScoreVersion] = useState<number>(0)
-    const [pageSpeedEnabled, setPageSpeedEnabled] = useState<boolean>(true)
+    const [hasRunPageSpeedOnce, setHasRunPageSpeedOnce] = useState<boolean>(false)
     const [recheckingCheckId, setRecheckingCheckId] = useState<string | null>(null)
 
     useEffect(() => {
@@ -2398,6 +2376,9 @@ export function App(): React.ReactElement {
     }, [])
 
     const handleAudit = useCallback(async () => {
+        const isOnPageSpeedDetail = detailCheck?.id === "google-pagespeed"
+        const shouldRunPageSpeed = !hasRunPageSpeedOnce || isOnPageSpeedDetail
+
         setIsRunning(true)
         setDetailCheck(null)
         setScanProgress(0)
@@ -2405,14 +2386,42 @@ export function App(): React.ReactElement {
         try {
             const report = await runAudit((done, total) => {
                 setScanProgress(Math.round((done / total) * 100))
-            }, pageSpeedEnabled)
-            setAuditReport(report)
+            }, shouldRunPageSpeed)
+
+            const previousPageSpeedCheck = auditReport?.categories
+                .flatMap((category) => category.checks)
+                .find((check) => check.id === "google-pagespeed")
+
+            let nextReport = report
+            if (!shouldRunPageSpeed && previousPageSpeedCheck) {
+                const categories = report.categories.map((category) => ({
+                    ...category,
+                    checks: category.checks.map((check) => (check.id === "google-pagespeed" ? previousPageSpeedCheck : check)),
+                }))
+                const scoreResult = calculateScore(categories)
+                nextReport = {
+                    ...report,
+                    categories,
+                    score: scoreResult.score,
+                    scoreLabel: scoreResult.scoreLabel,
+                    totalProgrammatic: scoreResult.totalProgrammatic,
+                    passed: scoreResult.passed,
+                    warned: scoreResult.warned,
+                    failed: scoreResult.failed,
+                }
+            }
+
+            if (shouldRunPageSpeed) {
+                setHasRunPageSpeedOnce(true)
+            }
+
+            setAuditReport(nextReport)
             setExpandedSections(new Set())
             setScoreVersion((v) => v + 1)
         } finally {
             setIsRunning(false)
         }
-    }, [pageSpeedEnabled])
+    }, [detailCheck?.id, hasRunPageSpeedOnce, auditReport])
 
     const toggleSection = useCallback((id: string) => {
         setExpandedSections((prev) => {
@@ -2434,198 +2443,13 @@ export function App(): React.ReactElement {
         setDetailCheck(null)
     }, [])
 
-    const handleGetSelection = useCallback(async () => {
-        try {
-            const framerAny = framer as unknown as Record<string, unknown>
-            if (typeof framerAny.getSelection !== "function") {
-                window.console.log("[Audit Plugin] getSelection() is not available in this context.")
-                return
-            }
-
-            const selection = await (framerAny.getSelection as () => Promise<CanvasNode[]>)()
-
-            const withParents = await Promise.all(
-                selection.map(async (node) => {
-                    const getNodeType = (n: CanvasNode): string | null => {
-                        const nAny = n as unknown as Record<string, unknown>
-                        if (typeof nAny.type === "string") return nAny.type
-                        if (typeof nAny.kind === "string") return nAny.kind
-                        if (typeof nAny.__type === "string") return nAny.__type
-                        const ctorName = (n as unknown as { constructor?: { name?: string } }).constructor?.name
-                        return typeof ctorName === "string" ? ctorName : null
-                    }
-
-                    let parentId: string | null = null
-                    const ancestors: Array<{ id: string; name: string | null; type: string | null }> = []
-                    try {
-                        let current = await node.getParent()
-                        parentId = current ? current.id : null
-
-                        let depth = 0
-                        while (current && depth < 20) {
-                            const currentAny = current as unknown as Record<string, unknown>
-                            ancestors.push({
-                                id: current.id,
-                                name: typeof currentAny.name === "string" ? currentAny.name : null,
-                                type: getNodeType(current as unknown as CanvasNode),
-                            })
-                            current = await current.getParent()
-                            depth++
-                        }
-                    } catch {
-                        parentId = null
-                    }
-                    const nodeAny = node as unknown as Record<string, unknown>
-                    const controls = (nodeAny.controls && typeof nodeAny.controls === "object") ? (nodeAny.controls as Record<string, unknown>) : {}
-                    const typedControls = (nodeAny.typedControls && typeof nodeAny.typedControls === "object") ? (nodeAny.typedControls as Record<string, unknown>) : {}
-
-                    const controlKeys = Object.keys(controls)
-                    const typedControlKeys = Object.keys(typedControls)
-                    const typedControlTypes = typedControlKeys.reduce<Record<string, string | null>>((acc, key) => {
-                        const value = typedControls[key]
-                        if (value && typeof value === "object") {
-                            const vAny = value as Record<string, unknown>
-                            acc[key] = typeof vAny.type === "string" ? vAny.type : null
-                        } else {
-                            acc[key] = null
-                        }
-                        return acc
-                    }, {})
-
-                    // Collect all enumerable keys on the node and its prototype chain
-                    const allKeys = new Set<string>()
-                    let proto: object | null = nodeAny as object
-                    while (proto && proto !== Object.prototype) {
-                        for (const k of Object.getOwnPropertyNames(proto)) allKeys.add(k)
-                        proto = Object.getPrototypeOf(proto) as object | null
-                    }
-
-                    // Snapshot every key's value (scalars only; objects shown as "[object]")
-                    const rawProps: Record<string, unknown> = {}
-                    for (const k of allKeys) {
-                        try {
-                            const v = (nodeAny as Record<string, unknown>)[k]
-                            rawProps[k] = typeof v === "function" ? "[function]"
-                                : v === null ? null
-                                : typeof v === "object" ? `[object: ${Object.prototype.toString.call(v)}]`
-                                : v
-                        } catch {
-                            rawProps[k] = "[error reading]"
-                        }
-                    }
-
-                    // Try getNodesWithAttributeSet with candidate tag attribute names
-                    const candidateAttrs = ["tag", "htmlTag", "__htmlTag", "accessibilityTag", "semanticTag", "ariaRole", "role", "nodeTag", "elementTag"]
-                    const attributeSetResults: Record<string, string[]> = {}
-                    for (const attr of candidateAttrs) {
-                        try {
-                            const results = await (node as unknown as { getNodesWithAttributeSet: (a: string) => Promise<Array<{ id: string; name?: string }>> }).getNodesWithAttributeSet(attr)
-                            attributeSetResults[attr] = results.map((r) => `${r.id}${r.name ? ` (${r.name})` : ""}`)
-                        } catch (e) {
-                            attributeSetResults[attr] = [`[error: ${String(e)}]`]
-                        }
-                    }
-
-                    // Also try framer-level getNodesWithAttributeSet (engine method, null = global search)
-                    const framerAttributeSetResults: Record<string, unknown> = {}
-                    const engineGetNodesWithAttributeSet = framerAny["getNodesWithAttributeSet"] as ((attr: string) => Promise<unknown[]>) | undefined
-                    if (typeof engineGetNodesWithAttributeSet === "function") {
-                        for (const attr of candidateAttrs) {
-                            try {
-                                const results = await engineGetNodesWithAttributeSet(attr)
-                                framerAttributeSetResults[attr] = results.slice(0, 5)
-                            } catch (e) {
-                                framerAttributeSetResults[attr] = `[error: ${String(e)}]`
-                            }
-                        }
-                    } else {
-                        framerAttributeSetResults["_note"] = "framer.getNodesWithAttributeSet not available"
-                    }
-
-                    // Get the matching raw FrameNode from framer.getNodesWithType to compare properties
-                    let rawFrameNodeProps: Record<string, unknown> = {}
-                    try {
-                        const allFrames = await framer.getNodesWithType("FrameNode")
-                        const match = allFrames.find((f) => f.id === node.id)
-                        if (match) {
-                            const matchAny = match as unknown as Record<string, unknown>
-                            const rawKeys = new Set<string>()
-                            let rproto: object | null = matchAny as object
-                            while (rproto && rproto !== Object.prototype) {
-                                for (const k of Object.getOwnPropertyNames(rproto)) rawKeys.add(k)
-                                rproto = Object.getPrototypeOf(rproto) as object | null
-                            }
-                            for (const k of rawKeys) {
-                                try {
-                                    const v = matchAny[k]
-                                    rawFrameNodeProps[k] = typeof v === "function" ? "[function]"
-                                        : v === null ? null
-                                        : typeof v === "object" ? `[object: ${Object.prototype.toString.call(v)}]`
-                                        : v
-                                } catch {
-                                    rawFrameNodeProps[k] = "[error]"
-                                }
-                            }
-                        } else {
-                            rawFrameNodeProps["_note"] = "node not found in getNodesWithType(FrameNode)"
-                        }
-                    } catch (e) {
-                        rawFrameNodeProps["_error"] = String(e)
-                    }
-
-                    return {
-                        id: node.id,
-                        name: typeof nodeAny.name === "string" ? nodeAny.name : null,
-                        type: getNodeType(node),
-                        className: typeof nodeAny.__class === "string" ? nodeAny.__class : null,
-                        componentIdentifier: typeof nodeAny.componentIdentifier === "string" ? nodeAny.componentIdentifier : null,
-                        componentName: typeof nodeAny.componentName === "string" ? nodeAny.componentName : null,
-                        insertURL: typeof nodeAny.insertURL === "string" ? nodeAny.insertURL : null,
-                        attributeSetResults,
-                        framerAttributeSetResults,
-                        rawFrameNodeProps,
-                        allKeys: Array.from(allKeys).filter((k) => !k.startsWith("__proto__")),
-                        rawProps,
-                        controlKeys,
-                        typedControlKeys,
-                        typedControlTypes,
-                        parentId,
-                        ancestors,
-                    }
-                }),
-            )
-
-            const selectionSummary = withParents.map((node) => ({
-                id: node.id,
-                name: node.name,
-                type: node.type,
-                className: node.className,
-                componentIdentifier: node.componentIdentifier,
-                componentName: node.componentName,
-                insertURL: node.insertURL,
-                parentId: node.parentId,
-                controlKeys: node.controlKeys,
-                typedControlKeys: node.typedControlKeys,
-                typedControlTypes: node.typedControlTypes,
-            }))
-
-            window.console.groupCollapsed("[Audit Plugin] Current selection")
-            window.console.log("Raw selection:", selection)
-            window.console.log("Selection snapshot:", withParents)
-            window.console.table(selectionSummary)
-            window.console.groupEnd()
-        } catch (error) {
-            window.console.log("[Audit Plugin] Failed to read selection:", error)
-        }
-    }, [])
-
     const handleRecheck = useCallback(async () => {
         if (!detailCheck) return
 
         const checkId = detailCheck.id
         setRecheckingCheckId(checkId)
         try {
-            const updatedCheck = await runRequirementCheck(checkId, pageSpeedEnabled)
+            const updatedCheck = await runRequirementCheck(checkId, true)
             if (!updatedCheck) return
 
             setDismissedItems((prev) => {
@@ -2658,7 +2482,7 @@ export function App(): React.ReactElement {
         } finally {
             setRecheckingCheckId(null)
         }
-    }, [detailCheck, pageSpeedEnabled])
+    }, [detailCheck])
 
     const handleDismiss = useCallback((checkId: string, index: number) => {
         setDismissedItems((prev) => {
@@ -2713,7 +2537,6 @@ export function App(): React.ReactElement {
                                         </span>
                                     )}
                                 </div>
-                                <PageSpeedToggle enabled={pageSpeedEnabled} onChange={setPageSpeedEnabled} />
                             </div>
                             {effectiveReport && <StatsStrip report={effectiveReport} theme={theme} />}
                             {!effectiveReport && !isRunning && (
@@ -2739,33 +2562,6 @@ export function App(): React.ReactElement {
                         </div>
 
                     <div className="audit-scroll" style={{ paddingBottom: 60 }}>
-                        {!detailCheck && (
-                            <div style={{ marginBottom: 6 }}>
-                                <button
-                                    onClick={() => { void handleGetSelection() }}
-                                    style={{
-                                        width: "100%",
-                                        display: "flex",
-                                        alignItems: "center",
-                                        justifyContent: "space-between",
-                                        padding: "8px 10px",
-                                        borderRadius: 8,
-                                        backgroundColor: colors.card.bg,
-                                        border: `1px solid ${colors.card.border}`,
-                                        cursor: "pointer",
-                                        userSelect: "none",
-                                    }}
-                                >
-                                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", color: colors.text.secondary }}>
-                                        Get Selection
-                                    </span>
-                                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, opacity: 0.4 }}>
-                                        <path d="M3.5 2L6.5 5L3.5 8" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                                    </svg>
-                                </button>
-                            </div>
-                        )}
-
                         {detailCheck && (
                             <DetailView
                                 check={detailCheck}
@@ -2801,7 +2597,6 @@ export function App(): React.ReactElement {
                                         Checks 28 requirements against the Framer template guidelines
                                     </span>
                                 </div>
-                                <PageSpeedToggle enabled={pageSpeedEnabled} onChange={setPageSpeedEnabled} />
                             </div>
                         )}
                     </div>
