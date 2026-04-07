@@ -3486,14 +3486,14 @@ async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
     // Check emails have links
     for (const [email, displayEmail] of foundEmails) {
         if (!mailtoEmails.has(email)) {
-            issues.push({ label: `'${displayEmail}' has no mailto: link`, nodeId: null })
+            issues.push({ label: displayEmail, nodeId: null })
         }
     }
 
     // Check phones have links
     for (const [phone, displayPhone] of foundPhones) {
         if (!telPhones.has(phone)) {
-            issues.push({ label: `'${displayPhone}' has no tel: link`, nodeId: null })
+            issues.push({ label: displayPhone, nodeId: null })
         }
     }
 
@@ -3502,11 +3502,11 @@ async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
         const normalized = link.toLowerCase()
         if (normalized.startsWith("mailto:")) {
             if (!/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+/.test(link)) {
-                issues.push({ label: `Invalid mailto format: '${link}'`, nodeId: null })
+                issues.push({ label: link.substring(7).trim(), nodeId: null })
             }
         } else if (normalized.startsWith("tel:")) {
             if (!/^tel:\+?[\d\s()-]+$/.test(link)) {
-                issues.push({ label: `Invalid tel format: '${link}'`, nodeId: null })
+                issues.push({ label: link.substring(4).trim(), nodeId: null })
             }
         }
     }
