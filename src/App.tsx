@@ -674,6 +674,22 @@ function PageSpeedDetailView(props: {
 
     const strategyData = data ? (tab === "desktop" ? data.desktop : data.mobile) : null
 
+    const LoadingCard = (loadingProps: { width?: string | number; height: number; radius?: number; marginTop?: number }): React.ReactElement => (
+        <div
+            style={{
+                width: loadingProps.width ?? "100%",
+                height: loadingProps.height,
+                borderRadius: loadingProps.radius ?? 10,
+                marginTop: loadingProps.marginTop ?? 0,
+                background: "linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.12) 37%, rgba(255,255,255,0.06) 63%)",
+                backgroundSize: "400% 100%",
+                animation: "pulse 1.4s ease infinite",
+            }}
+        />
+    )
+
+    const loadingState = props.isRunning
+
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%" }}>
             {/* Back header */}
@@ -703,14 +719,62 @@ function PageSpeedDetailView(props: {
                 </div>
             </div>
 
-            {props.isRunning ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 180 }}>
-                    <SpinnerIcon color={statusColor} />
-                    <div style={{ fontSize: 13, color: colors.text.secondary, marginTop: 12 }}>Running Google PageSpeed…</div>
+            {loadingState ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}` }}>
+                        <SpinnerIcon color={statusColor} />
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: colors.text.primary }}>Running Google PageSpeed…</div>
+                            <div style={{ fontSize: 12, color: colors.text.secondary }}>Fetching desktop and mobile scores from Google.</div>
+                        </div>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, justifyItems: "center", opacity: 0.9 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                            <LoadingCard width={48} height={10} />
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                            <LoadingCard width={52} height={10} />
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                            <LoadingCard width={52} height={10} />
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                            <LoadingCard width={44} height={10} />
+                        </div>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        <LoadingCard height={44} />
+                        <LoadingCard height={44} />
+                        <LoadingCard height={44} />
+                        <LoadingCard height={44} />
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
+                        <LoadingCard height={12} width="42%" />
+                        <LoadingCard height={12} width="64%" />
+                        <LoadingCard height={12} width="58%" />
+                    </div>
                 </div>
             ) : !data ? (
-                <div style={{ fontSize: 13, color: colors.text.secondary, textAlign: "center", padding: 24 }}>
-                    No PageSpeed data yet. Use Recheck to run it.
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, minHeight: 280, padding: 24, textAlign: "center" }}>
+                    <div style={{ width: 56, height: 56, borderRadius: "50%", border: `4px solid ${statusColor}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                            <path d="M9 4.5V9.2L12 11" stroke={statusColor} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M15.5 9A6.5 6.5 0 1 1 9 2.5" stroke={statusColor} strokeWidth="1.6" strokeLinecap="round" />
+                        </svg>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 220 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary }}>PageSpeed is ready to run</div>
+                        <div style={{ fontSize: 12, lineHeight: 1.5, color: colors.text.secondary }}>
+                            Open this page and press Recheck to fetch the latest desktop and mobile scores.
+                        </div>
+                    </div>
                 </div>
             ) : (
                 <>
@@ -2380,7 +2444,9 @@ export function App(): React.ReactElement {
         const shouldRunPageSpeed = !hasRunPageSpeedOnce || isOnPageSpeedDetail
 
         setIsRunning(true)
-        setDetailCheck(null)
+        if (!isOnPageSpeedDetail) {
+            setDetailCheck(null)
+        }
         setScanProgress(0)
         setDismissedItems(new Map())
         try {
