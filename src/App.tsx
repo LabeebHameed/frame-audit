@@ -786,7 +786,12 @@ function PageSpeedDetailView(props: {
                             lineHeight: 1.45,
                         }}
                     >
-                        PageSpeed data is unavailable for this run. Use Recheck to run the API request again.
+                        {props.check.detail && props.check.detail.trim().length > 0
+                            ? props.check.detail
+                            : "PageSpeed data is unavailable for this run."}
+                        <div style={{ marginTop: 6 }}>
+                            Use Recheck to run the API request again.
+                        </div>
                     </div>
                 ) : (
                     <>
