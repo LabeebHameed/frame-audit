@@ -1,4 +1,4 @@
-import { framer, $framerInternal } from "framer-plugin"
+import { framer, $framerInternal, isComponentGestureVariant } from "framer-plugin"
 import type { CanvasNode, ComponentNode, FrameNode, PublishInfo } from "framer-plugin"
 import * as ts from "typescript"
 import type { AuditReport, CheckCategory, CheckItem, CheckResult, CheckStatus, PageSpeedData, PageSpeedMetric, PageSpeedStrategyData, PaddingCheckItem, PaddingReport, PaddingSection, PaddingSectionResult, ScoreLabel } from "../types"
@@ -2241,11 +2241,6 @@ async function checkLargeUncompressedAssets(nodes: AllNodes): Promise<CheckResul
         flagged.push(item)
     }
 
-    const formatBytes = (bytes: number): string => {
-        const mb = bytes / (1024 * 1024)
-        return `${mb.toFixed(2)}MB`
-    }
-
     for (const frame of nodes.frameNodes) {
         const asset = getFrameBackgroundImage(frame)
         if (!asset) continue
@@ -3334,7 +3329,7 @@ async function checkEmptyCmsFields(nodes: AllNodes): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
-// LINKS CHECKS (4)
+// LINKS CHECKS (5)
 // ---------------------------------------------------------------------------
 
 function normalizeDiscoveredLink(value: unknown): string | null {
@@ -3460,6 +3455,173 @@ async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
         return makeCheck(id, label, "pass", `All ${mailtoTelLinks.length} mailto/tel links are valid`, [], true)
     }
     return makeCheck(id, label, "warning", `${issues.length} mailto/tel links have invalid format`, issues, true)
+}
+
+async function checkHoverStateLinks(nodes: AllNodes): Promise<CheckResult> {
+    const id = "hover-state-links"
+    const label = "Hover State Links"
+
+    // Identify components that have hover or pressed state variants
+    const hoverCapableIdentifiers = new Set<string>()
+
+    for (const frame of nodes.frameNodes) {
+        const componentIdentifier = nodes.variantFrameComponentIdMap.get(frame.id)
+        if (!componentIdentifier) continue
+
+        // Check if this frame is a gesture variant (hover or pressed state)
+        if (isComponentGestureVariant(frame)) {
+            const gesture = (frame as any).gesture
+            if (gesture === "hover" || gesture === "pressed") {
+                hoverCapableIdentifiers.add(componentIdentifier)
+            }
+        }
+    }
+
+    if (hoverCapableIdentifiers.size === 0) {
+        return makeCheck(id, label, "skip", "No components with hover or pressed state variants found", [], true)
+    }
+
+    function isEmptyLinkValue(value: unknown): boolean {
+        if (value === undefined || value === null) return true
+        if (typeof value === "string") return value.trim().length === 0
+
+        if (typeof value !== "object") return false
+        const record = value as Record<string, unknown>
+
+        const type = record.type
+
+        if (type === "url") {
+            const url = record.url
+            return typeof url !== "string" || url.trim().length === 0
+        }
+
+        if (type === "webPage") {
+            const webPageId = record.webPageId
+            return typeof webPageId !== "string" || webPageId.trim().length === 0
+        }
+
+        if (type === "link") {
+            if ("value" in record) return isEmptyLinkValue(record.value)
+            return isEmptyLinkValue({
+                url: record.url,
+                href: record.href,
+                path: record.path,
+                pageId: record.pageId,
+                webPageId: record.webPageId,
+            })
+        }
+
+        if ("url" in record) return typeof record.url !== "string" || record.url.trim().length === 0
+        if ("href" in record) return typeof record.href !== "string" || record.href.trim().length === 0
+        if ("path" in record) return typeof record.path !== "string" || record.path.trim().length === 0
+        if ("webPageId" in record) return typeof record.webPageId !== "string" || record.webPageId.trim().length === 0
+        if ("pageId" in record) return typeof record.pageId !== "string" || record.pageId.trim().length === 0
+        if ("value" in record) return isEmptyLinkValue(record.value)
+
+        return false
+    }
+
+    function collectExplicitLinkCandidates(node: AnyNode): ReadonlyArray<unknown> {
+        const explicitLinkCandidates: unknown[] = []
+
+        if (node.link !== undefined) {
+            explicitLinkCandidates.push(node.link)
+        }
+
+        const typedControls = (node.typedControls ?? {}) as Record<string, unknown>
+        for (const control of Object.values(typedControls)) {
+            if (typeof control !== "object" || control === null) continue
+            const record = control as Record<string, unknown>
+            const typeValue = typeof record.type === "string" ? record.type.toLowerCase() : ""
+            if (typeValue === "link" || typeValue === "url" || typeValue === "webpage") {
+                explicitLinkCandidates.push("value" in record ? record.value : record)
+            }
+        }
+
+        const controls = (node.controls ?? {}) as Record<string, unknown>
+        for (const control of Object.values(controls)) {
+            if (typeof control !== "object" || control === null) continue
+            const record = control as Record<string, unknown>
+            const typeValue = typeof record.type === "string" ? record.type.toLowerCase() : ""
+            if (typeValue === "link" || typeValue === "url" || typeValue === "webpage") {
+                explicitLinkCandidates.push("value" in record ? record.value : record)
+            }
+        }
+
+        const collectStructuredLinks = (input: unknown, depth: number, seen: WeakSet<object>): void => {
+            if (depth > 6 || input === null || input === undefined) return
+            if (typeof input !== "object") return
+
+            const obj = input as object
+            if (seen.has(obj)) return
+            seen.add(obj)
+
+            if (Array.isArray(input)) {
+                for (const entry of input) collectStructuredLinks(entry, depth + 1, seen)
+                return
+            }
+
+            const record = input as Record<string, unknown>
+            const typeValue = typeof record.type === "string" ? record.type.toLowerCase() : ""
+            const isLinkType = typeValue === "link" || typeValue === "url" || typeValue === "webpage"
+            const hasExplicitLinkFields = "url" in record || "href" in record || "path" in record || "webPageId" in record || "pageId" in record
+            if (isLinkType || hasExplicitLinkFields) {
+                explicitLinkCandidates.push("value" in record ? record.value : record)
+            }
+
+            for (const nested of Object.values(record)) {
+                collectStructuredLinks(nested, depth + 1, seen)
+            }
+        }
+
+        const seen = new WeakSet<object>()
+        collectStructuredLinks(node.props, 0, seen)
+        collectStructuredLinks(node.properties, 0, seen)
+        collectStructuredLinks(node.componentProperties, 0, seen)
+
+        return explicitLinkCandidates
+    }
+
+    const pageIds = new Set(nodes.pages.map((page) => page.id))
+    const flagged: Array<CheckItem> = []
+    const flaggedNodeIds = new Set<string>()
+    let hoverInstancesOnPages = 0
+
+    for (const node of nodes.componentNodes) {
+        const nodeId = node.id
+        if (!isPrimaryScopedNode(nodes, nodeId)) continue
+
+        const componentIdentifier = typeof node.componentIdentifier === "string"
+            ? node.componentIdentifier
+            : null
+        if (!componentIdentifier || !hoverCapableIdentifiers.has(componentIdentifier)) continue
+
+        if (!(await isOnPage(node, pageIds, nodes.designFilePageIds))) continue
+        hoverInstancesOnPages++
+
+        const candidates = collectExplicitLinkCandidates(node)
+        const hasConfiguredLink = candidates.some((candidate) => !isEmptyLinkValue(candidate))
+        if (!hasConfiguredLink && !flaggedNodeIds.has(nodeId)) {
+            flagged.push({ label: getNodeName(node), nodeId })
+            flaggedNodeIds.add(nodeId)
+        }
+    }
+
+    if (hoverInstancesOnPages === 0) {
+        return makeCheck(id, label, "skip", "No hover-state component instances found on pages", [], true)
+    }
+    if (flagged.length === 0) {
+        return makeCheck(id, label, "pass", `All ${hoverInstancesOnPages} hover-state component instance(s) have links`, [], true)
+    }
+
+    return makeCheck(
+        id,
+        label,
+        "warning",
+        `${flagged.length} of ${hoverInstancesOnPages} hover-state component instance(s) are missing links`,
+        flagged,
+        true,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -6107,6 +6269,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         breakpointWidths,
         // Links
         mailtoTel,
+        hoverStateLinks,
         brokenInternal,
         linksTo404,
         activeLinks,
@@ -6141,6 +6304,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         track(checkOverflow(nodes)),
         track(checkBreakpointWidths(nodes)),
         track(checkMailtoTelLinks(nodes)),
+        track(checkHoverStateLinks(nodes)),
         track(checkBrokenInternalLinks(nodes)),
         track(checkLinksTo404Page(nodes)),
         track(checkActiveLinks(nodes)),
@@ -6179,7 +6343,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         {
             id: "links",
             label: "Links",
-            checks: [mailtoTel, brokenInternal, linksTo404, activeLinks, contactFormSendTo],
+            checks: [mailtoTel, hoverStateLinks, brokenInternal, linksTo404, activeLinks, contactFormSendTo],
         },
         {
             id: "cms",
@@ -6235,6 +6399,7 @@ async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = t
         case "overflow": return checkOverflow(nodes)
         case "breakpoint-widths": return checkBreakpointWidths(nodes)
         case "mailto-tel-links": return checkMailtoTelLinks(nodes)
+        case "hover-state-links": return checkHoverStateLinks(nodes)
         case "broken-internal-links": return checkBrokenInternalLinks(nodes)
         case "links-to-404": return checkLinksTo404Page(nodes)
         case "active-links": return checkActiveLinks(nodes)

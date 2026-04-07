@@ -257,6 +257,10 @@ function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep:
             whatItMeans: "These links are missing the expected mailto/tel format.",
             nextStep: "Update each link so email actions use mailto: and phone actions use tel:.",
         },
+        "hover-state-links": {
+            whatItMeans: "These hover-state components are used on pages without a configured link.",
+            nextStep: "Add a link variable/value to each flagged component instance used on pages.",
+        },
         "color-styles": {
             whatItMeans: "These layers are using colors that should be converted to shared styles.",
             nextStep: "Apply a reusable color style so the design system stays consistent.",
