@@ -4787,7 +4787,9 @@ function parsePageSpeedStrategy(result: any, publishedUrl: string): PageSpeedStr
 }
 
 async function fetchPageSpeedStrategy(url: string, strategy: "desktop" | "mobile", apiKey: string): Promise<any> {
-    const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&key=${apiKey}`
+    const categories = ["PERFORMANCE", "ACCESSIBILITY", "BEST_PRACTICES", "SEO"]
+    const categoryParams = categories.map((category) => `category=${encodeURIComponent(category)}`).join("&")
+    const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&${categoryParams}&key=${apiKey}`
     const response = await fetch(apiUrl)
     if (!response.ok) {
         let apiError: any = null
