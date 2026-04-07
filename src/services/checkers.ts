@@ -3427,34 +3427,103 @@ async function collectAllLinks(nodes: AllNodes): Promise<ReadonlyArray<{ name: s
 async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
     const id = "mailto-tel-links"
     const label = "Mailto/Tel Links"
-    const allLinks = await collectAllLinks(nodes)
-    const mailtoTelLinks = allLinks.filter((l) => {
-        const normalized = l.link.toLowerCase()
-        return normalized.startsWith("mailto:") || normalized.startsWith("tel:")
-    })
 
-    if (mailtoTelLinks.length === 0) {
-        return makeCheck(id, label, "skip", "No mailto/tel links found — skipped", [], true)
-    }
+    // Email regex: basic email pattern
+    const emailRegex = /\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g
+    // Phone regex: various formats like 123-456-7890, (123) 456-7890, +1 234 567 8900, etc.
+    const phoneRegex = /\b(\+?[\d\s()-]{10,}|(?:\d{3}[-.]?)?\d{3}[-.]?\d{4})\b/g
 
-    const issues: Array<CheckItem> = []
-    for (const entry of mailtoTelLinks) {
-        if (entry.link.startsWith("mailto:")) {
-            if (!/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+/.test(entry.link)) {
-                issues.push({ label: `${entry.name}: '${entry.link}' — invalid email format`, nodeId: null })
+    // Collect all email addresses and phone numbers from text nodes
+    const foundEmails = new Map<string, Set<string>>() // email (lowercase) -> set of node names
+    const foundPhones = new Map<string, Set<string>>() // phone (normalized) -> set of node names
+
+    for (const textNode of nodes.textNodes) {
+        const text = (await getNodeText(textNode)).trim()
+        if (!text) continue
+
+        const nodeName = getNodeName(textNode)
+
+        // Find emails
+        const emailMatches = text.match(/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g)
+        if (emailMatches) {
+            for (const email of emailMatches) {
+                const key = email.toLowerCase()
+                if (!foundEmails.has(key)) foundEmails.set(key, new Set())
+                foundEmails.get(key)!.add(nodeName)
             }
         }
-        if (entry.link.startsWith("tel:")) {
-            if (!/^tel:\+?[\d\s()-]+$/.test(entry.link)) {
-                issues.push({ label: `${entry.name}: '${entry.link}' — invalid phone format`, nodeId: null })
+
+        // Find phones (normalize for comparison)
+        const phoneMatches = text.match(/\b(\+?[\d\s()-]{10,}|(?:\d{3}[-.]?)?\d{3}[-.]?\d{4})\b/g)
+        if (phoneMatches) {
+            for (const phone of phoneMatches) {
+                const normalized = phone.replace(/[\s()-]/g, "")
+                if (!foundPhones.has(normalized)) foundPhones.set(normalized, new Set())
+                foundPhones.get(normalized)!.add(nodeName)
+            }
+        }
+    }
+
+    if (foundEmails.size === 0 && foundPhones.size === 0) {
+        return makeCheck(id, label, "skip", "No email addresses or phone numbers found on the page", [], true)
+    }
+
+    // Collect all mailto and tel links
+    const allLinks = await collectAllLinks(nodes)
+    const mailtoEmails = new Set<string>()
+    const telPhones = new Set<string>()
+
+    for (const { link } of allLinks) {
+        const normalized = link.toLowerCase()
+        if (normalized.startsWith("mailto:")) {
+            const email = normalized.substring(7) // Remove "mailto:"
+            mailtoEmails.add(email)
+        } else if (normalized.startsWith("tel:")) {
+            const phone = normalized.substring(4).replace(/[\s()-]/g, "") // Remove "tel:" and normalize
+            telPhones.add(phone)
+        }
+    }
+
+    // Check for missing links and validate formats
+    const issues: Array<CheckItem> = []
+
+    // Check emails have links
+    for (const [email, nodeNames] of foundEmails) {
+        if (!mailtoEmails.has(email)) {
+            const nodes = Array.from(nodeNames).join(", ")
+            issues.push({ label: `'${email}' found in ${nodes} but has no mailto: link`, nodeId: null })
+        }
+    }
+
+    // Check phones have links
+    for (const [phone, nodeNames] of foundPhones) {
+        if (!telPhones.has(phone)) {
+            const nodes = Array.from(nodeNames).join(", ")
+            issues.push({ label: `'${phone.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3")}' found in ${nodes} but has no tel: link`, nodeId: null })
+        }
+    }
+
+    // Validate format of all mailto/tel links
+    for (const { name, link } of allLinks) {
+        const normalized = link.toLowerCase()
+        if (normalized.startsWith("mailto:")) {
+            if (!/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+/.test(link)) {
+                issues.push({ label: `${name}: invalid mailto format '${link}'`, nodeId: null })
+            }
+        } else if (normalized.startsWith("tel:")) {
+            if (!/^tel:\+?[\d\s()-]+$/.test(link)) {
+                issues.push({ label: `${name}: invalid tel format '${link}'`, nodeId: null })
             }
         }
     }
 
     if (issues.length === 0) {
-        return makeCheck(id, label, "pass", `All ${mailtoTelLinks.length} mailto/tel links are valid`, [], true)
+        const emailCount = foundEmails.size
+        const phoneCount = foundPhones.size
+        return makeCheck(id, label, "pass", `All ${emailCount} email(s) and ${phoneCount} phone number(s) have valid links`, [], true)
     }
-    return makeCheck(id, label, "warning", `${issues.length} mailto/tel links have invalid format`, issues, true)
+
+    return makeCheck(id, label, "warning", `${issues.length} issue(s) with email/phone links`, issues, true)
 }
 
 async function checkHoverStateLinks(nodes: AllNodes): Promise<CheckResult> {
