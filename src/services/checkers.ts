@@ -3493,7 +3493,9 @@ async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
     // Check phones have links
     for (const [phone, displayPhone] of foundPhones) {
         if (!telPhones.has(phone)) {
-            issues.push({ label: displayPhone, nodeId: null })
+            const digitsOnly = displayPhone.replace(/[^\d]/g, "")
+            const normalizedWithPlus = digitsOnly.length > 0 ? `+${digitsOnly}` : displayPhone
+            issues.push({ label: normalizedWithPlus, nodeId: null })
         }
     }
 
@@ -3506,7 +3508,10 @@ async function checkMailtoTelLinks(nodes: AllNodes): Promise<CheckResult> {
             }
         } else if (normalized.startsWith("tel:")) {
             if (!/^tel:\+?[\d\s()-]+$/.test(link)) {
-                issues.push({ label: link.substring(4).trim(), nodeId: null })
+                const telValue = link.substring(4).trim()
+                const digitsOnly = telValue.replace(/[^\d]/g, "")
+                const normalizedWithPlus = digitsOnly.length > 0 ? `+${digitsOnly}` : telValue
+                issues.push({ label: normalizedWithPlus, nodeId: null })
             }
         }
     }
