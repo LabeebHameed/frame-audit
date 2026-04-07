@@ -732,7 +732,7 @@ function PageSpeedDetailView(props: {
         
 
             <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8, width: "100%" }}>
-                {props.isRunning || !data ? (
+                {props.isRunning || props.isRechecking ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}` }}>
                             <SpinnerIcon color={statusColor} />
@@ -773,6 +773,20 @@ function PageSpeedDetailView(props: {
                             <LoadingCard height={12} width="64%" />
                             <LoadingCard height={12} width="58%" />
                         </div>
+                    </div>
+                ) : !data ? (
+                    <div
+                        style={{
+                            fontSize: 12,
+                            color: colors.text.secondary,
+                            backgroundColor: `${statusColor}0C`,
+                            border: `1px solid ${statusColor}22`,
+                            borderRadius: 7,
+                            padding: "10px 12px",
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        PageSpeed data is unavailable for this run. Use Recheck to run the API request again.
                     </div>
                 ) : (
                     <>
