@@ -688,117 +688,128 @@ function PageSpeedDetailView(props: {
         />
     )
 
-    const loadingState = props.isRunning
-
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%" }}>
-            {/* Back header */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+        <div style={{ display: "flex", flexDirection: "column", width: "100%", alignItems: "flex-start" }}>
+            <div style={{ display: "flex", alignItems: "center", width: "100%", marginBottom: 12 }}>
                 <button
                     onClick={props.onBack}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", color: colors.text.secondary }}
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        background: "none",
+                        border: "none",
+                        color: colors.text.secondary,
+                        fontSize: 12,
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        padding: 0,
+                        alignSelf: "flex-start",
+                        width: "fit-content",
+                    }}
                 >
-                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                        <path d="M11 14L6 9l5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+                        <path d="M9 2.5L5 7L9 11.5" stroke={colors.text.secondary} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
+                    Back
                 </button>
-                <span style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary }}>Google PageSpeed</span>
-                <span style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    color: statusColor,
-                    background: `${statusColor}22`,
-                    borderRadius: 6,
-                    padding: "2px 8px",
-                    textTransform: "uppercase",
-                }}>
-                    {props.check.status}
-                </span>
-                <div style={{ marginLeft: "auto" }}>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
                     <RecheckButton onClick={props.onRecheck} disabled={props.isRechecking || props.isRunning} />
                 </div>
             </div>
 
-            {loadingState ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}` }}>
-                        <SpinnerIcon color={statusColor} />
-                        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: colors.text.primary }}>Running Google PageSpeed…</div>
-                            <div style={{ fontSize: 12, color: colors.text.secondary }}>Fetching desktop and mobile scores from Google.</div>
-                        </div>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, justifyItems: "center", opacity: 0.9 }}>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
-                            <LoadingCard width={48} height={10} />
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
-                            <LoadingCard width={52} height={10} />
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
-                            <LoadingCard width={52} height={10} />
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                            <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
-                            <LoadingCard width={44} height={10} />
-                        </div>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                        <LoadingCard height={44} />
-                        <LoadingCard height={44} />
-                        <LoadingCard height={44} />
-                        <LoadingCard height={44} />
-                    </div>
-
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
-                        <LoadingCard height={12} width="42%" />
-                        <LoadingCard height={12} width="64%" />
-                        <LoadingCard height={12} width="58%" />
-                    </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, width: "100%" }}>
+                <StatusIcon status={props.check.status} theme={props.theme} />
+                <span style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary, flex: 1, minWidth: 0 }}>
+                    {props.check.label}
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.fail, backgroundColor: `${colors.status.fail}18`, borderRadius: 4, padding: "1px 5px" }}>0</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.pass, backgroundColor: `${colors.status.pass}18`, borderRadius: 4, padding: "1px 5px" }}>0</span>
                 </div>
-            ) : !data ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, minHeight: 280, padding: 24, textAlign: "center" }}>
-                    <div style={{ width: 56, height: 56, borderRadius: "50%", border: `4px solid ${statusColor}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                            <path d="M9 4.5V9.2L12 11" stroke={statusColor} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                            <path d="M15.5 9A6.5 6.5 0 1 1 9 2.5" stroke={statusColor} strokeWidth="1.6" strokeLinecap="round" />
-                        </svg>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 220 }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary }}>PageSpeed is ready to run</div>
-                        <div style={{ fontSize: 12, lineHeight: 1.5, color: colors.text.secondary }}>
-                            Open this page and press Recheck to fetch the latest desktop and mobile scores.
-                        </div>
-                    </div>
-                </div>
-            ) : (
-                <>
-                    {/* Desktop / Mobile tab switcher */}
-                    <div style={{
-                        display: "flex",
-                        background: "rgba(255,255,255,0.06)",
-                        borderRadius: 10,
-                        padding: 3,
-                        marginBottom: 20,
-                    }}>
-                        <button style={tabStyle(tab === "desktop")} onClick={() => setTab("desktop")}>Desktop</button>
-                        <button style={tabStyle(tab === "mobile")} onClick={() => setTab("mobile")}>Mobile</button>
-                    </div>
+            </div>
 
-                    {strategyData ? (
-                        <PageSpeedStrategyView data={strategyData} publishedUrl={strategyData.publishedUrl} />
-                    ) : (
-                        <div style={{ fontSize: 13, color: colors.text.secondary, textAlign: "center", padding: 24 }}>
-                            No data available for {tab}.
+            {props.check.detail && (() => {
+                const guidance = getDetailGuidance(props.check)
+                return (
+                    <div
+                        style={{
+                            fontSize: 12,
+                            color: colors.text.secondary,
+                            backgroundColor: `${statusColor}0C`,
+                            border: `1px solid ${statusColor}22`,
+                            borderRadius: 7,
+                            padding: "8px 10px",
+                            marginBottom: 12,
+                            lineHeight: 1.45,
+                        }}
+                    >
+                        <div>{props.check.detail}</div>
+                        <div style={{ marginTop: 6 }}>{guidance.nextStep}</div>
+                    </div>
+                )
+            })()}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8, width: "100%" }}>
+                {props.isRunning || !data ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, backgroundColor: colors.card.bg, border: `1px solid ${colors.card.border}` }}>
+                            <SpinnerIcon color={statusColor} />
+                            <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, color: colors.text.primary }}>Running Google PageSpeed…</div>
+                                <div style={{ fontSize: 12, color: colors.text.secondary }}>Fetching desktop and mobile scores from Google.</div>
+                            </div>
                         </div>
-                    )}
-                </>
-            )}
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, justifyItems: "center", opacity: 0.9 }}>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                                <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                                <LoadingCard width={48} height={10} />
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                                <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                                <LoadingCard width={52} height={10} />
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                                <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                                <LoadingCard width={52} height={10} />
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                                <div style={{ width: 56, height: 56, borderRadius: "50%", border: "4px solid rgba(255,255,255,0.08)" }} />
+                                <LoadingCard width={44} height={10} />
+                            </div>
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                            <LoadingCard height={44} />
+                            <LoadingCard height={44} />
+                            <LoadingCard height={44} />
+                            <LoadingCard height={44} />
+                        </div>
+
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
+                            <LoadingCard height={12} width="42%" />
+                            <LoadingCard height={12} width="64%" />
+                            <LoadingCard height={12} width="58%" />
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        <div style={{ display: "flex", background: "rgba(255,255,255,0.06)", borderRadius: 10, padding: 3, marginBottom: 20 }}>
+                            <button style={tabStyle(tab === "desktop")} onClick={() => setTab("desktop")}>Desktop</button>
+                            <button style={tabStyle(tab === "mobile")} onClick={() => setTab("mobile")}>Mobile</button>
+                        </div>
+
+                        {strategyData ? (
+                            <PageSpeedStrategyView data={strategyData} publishedUrl={strategyData.publishedUrl} />
+                        ) : (
+                            <div style={{ fontSize: 13, color: colors.text.secondary, textAlign: "center", padding: 24 }}>
+                                No data available for {tab}.
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
         </div>
     )
 }
