@@ -4746,7 +4746,7 @@ async function fetchPageSpeedStrategy(url: string, strategy: "desktop" | "mobile
     return response.json()
 }
 
-async function checkGooglePageSpeed(_nodes: AllNodes): Promise<CheckResult> {
+async function checkGooglePageSpeed(_nodes: AllNodes, forceRefresh: boolean = false): Promise<CheckResult> {
     const id = "google-pagespeed"
     const label = "Google PageSpeed"
     const framerAny = (framer as unknown) as Record<string, unknown>
@@ -4791,7 +4791,7 @@ async function checkGooglePageSpeed(_nodes: AllNodes): Promise<CheckResult> {
     const cacheKey = `pagespeed2:${publishedUrl}`
     if (!(window as any)._pageSpeedCache) (window as any)._pageSpeedCache = {}
     const cache = (window as any)._pageSpeedCache
-    if (cache[cacheKey]) {
+    if (!forceRefresh && cache[cacheKey]) {
         const cached = cache[cacheKey]
         if (cached.error) return makeCheck(id, label, "warning", cached.error, [], true)
         const perfScore = cached.pageSpeedData?.desktop?.performance ?? cached.pageSpeedData?.mobile?.performance ?? null
@@ -6390,7 +6390,7 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
 // Main entry point
 // ---------------------------------------------------------------------------
 
-async function runAudit(onProgress?: (done: number, total: number) => void, enablePageSpeed: boolean = true): Promise<AuditReport> {
+async function runAudit(onProgress?: (done: number, total: number) => void, enablePageSpeed: boolean = true, forcePageSpeedRefresh: boolean = false): Promise<AuditReport> {
     const nodes = await fetchAllNodes()
 
     const TOTAL = 33
@@ -6479,7 +6479,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         track(checkContactFormSendTo(nodes)),
         track(checkDuplicateCmsContent(nodes)),
         track(checkEmptyCmsFields(nodes)),
-        enablePageSpeed ? track(checkGooglePageSpeed(nodes)) : track(skipCheck("google-pagespeed", "Google PageSpeed", "Check disabled")),
+        enablePageSpeed ? track(checkGooglePageSpeed(nodes, forcePageSpeedRefresh)) : track(skipCheck("google-pagespeed", "Google PageSpeed", "Check disabled")),
     ])
 
     const categories: ReadonlyArray<CheckCategory> = [
@@ -6539,7 +6539,7 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
     }
 }
 
-async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = true): Promise<CheckResult | null> {
+async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = true, forcePageSpeedRefresh: boolean = false): Promise<CheckResult | null> {
     const nodes = await fetchAllNodes()
 
     switch (checkId) {
@@ -6577,7 +6577,7 @@ async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = t
         case "empty-cms-fields": return checkEmptyCmsFields(nodes)
         case "google-pagespeed":
             return enablePageSpeed
-                ? checkGooglePageSpeed(nodes)
+                ? checkGooglePageSpeed(nodes, forcePageSpeedRefresh)
                 : skipCheck("google-pagespeed", "Google PageSpeed", "Check disabled")
         default:
             return null

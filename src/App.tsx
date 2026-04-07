@@ -729,26 +729,7 @@ function PageSpeedDetailView(props: {
                 </div>
             </div>
 
-            {props.check.detail && (() => {
-                const guidance = getDetailGuidance(props.check)
-                return (
-                    <div
-                        style={{
-                            fontSize: 12,
-                            color: colors.text.secondary,
-                            backgroundColor: `${statusColor}0C`,
-                            border: `1px solid ${statusColor}22`,
-                            borderRadius: 7,
-                            padding: "8px 10px",
-                            marginBottom: 12,
-                            lineHeight: 1.45,
-                        }}
-                    >
-                        <div>{props.check.detail}</div>
-                        <div style={{ marginTop: 6 }}>{guidance.nextStep}</div>
-                    </div>
-                )
-            })()}
+        
 
             <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8, width: "100%" }}>
                 {props.isRunning || !data ? (
@@ -2463,7 +2444,7 @@ export function App(): React.ReactElement {
         try {
             const report = await runAudit((done, total) => {
                 setScanProgress(Math.round((done / total) * 100))
-            }, shouldRunPageSpeed)
+            }, shouldRunPageSpeed, isOnPageSpeedDetail)
 
             const previousPageSpeedCheck = auditReport?.categories
                 .flatMap((category) => category.checks)
@@ -2493,6 +2474,14 @@ export function App(): React.ReactElement {
             }
 
             setAuditReport(nextReport)
+            if (isOnPageSpeedDetail) {
+                const refreshedPageSpeedCheck = nextReport.categories
+                    .flatMap((category) => category.checks)
+                    .find((check) => check.id === "google-pagespeed")
+                if (refreshedPageSpeedCheck) {
+                    setDetailCheck(refreshedPageSpeedCheck)
+                }
+            }
             setExpandedSections(new Set())
             setScoreVersion((v) => v + 1)
         } finally {
@@ -2526,7 +2515,7 @@ export function App(): React.ReactElement {
         const checkId = detailCheck.id
         setRecheckingCheckId(checkId)
         try {
-            const updatedCheck = await runRequirementCheck(checkId, true)
+            const updatedCheck = await runRequirementCheck(checkId, true, true)
             if (!updatedCheck) return
 
             setDismissedItems((prev) => {
