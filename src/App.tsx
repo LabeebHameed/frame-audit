@@ -2678,7 +2678,6 @@ export function App(): React.ReactElement {
     const [detailCheck, setDetailCheck] = useState<CheckResult | null>(null)
     const [activeTab, setActiveTab] = useState<"results" | "padding">("results")
     const [dismissedItems, setDismissedItems] = useState<Map<string, Set<number>>>(new Map())
-    const [scanProgress, setScanProgress] = useState<number>(0)
     const [hasRunPageSpeedOnce, setHasRunPageSpeedOnce] = useState<boolean>(false)
     const [recheckingCheckId, setRecheckingCheckId] = useState<string | null>(null)
 
@@ -2694,12 +2693,9 @@ export function App(): React.ReactElement {
         if (!isOnPageSpeedDetail) {
             setDetailCheck(null)
         }
-        setScanProgress(0)
         setDismissedItems(new Map())
         try {
-            const report = await runAudit((done, total) => {
-                setScanProgress(Math.round((done / total) * 100))
-            }, shouldRunPageSpeed, isOnPageSpeedDetail)
+            const report = await runAudit(() => {}, shouldRunPageSpeed, isOnPageSpeedDetail)
 
             const previousPageSpeedCheck = auditReport?.categories
                 .flatMap((category) => category.checks)
@@ -2976,6 +2972,13 @@ export function App(): React.ReactElement {
                                         )
                                     })()}
                                     {/* Delta vs audit baseline */}
+                                    {effectiveReport && auditReport && effectiveReport.score === auditReport.score && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "1px 0" }}>
+                                            <span style={{ fontSize: 12, fontWeight: 500, color: "#2fd157", lineHeight: 1 }}>
+                                                Fixed issues
+                                            </span>
+                                        </div>
+                                    )}
                                     {effectiveReport && auditReport && effectiveReport.score !== auditReport.score && (
                                         <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "1px 0" }}>
                                             <span style={{ fontSize: 12, fontWeight: 500, color: "#2fd157", lineHeight: 1 }}>
@@ -2989,16 +2992,14 @@ export function App(): React.ReactElement {
                                 </div>
                             </div>
                             {/* Progress bar - hide only on the initial screen */}
-                            {(effectiveReport || isRunning) && (() => {
-                                const pc = isRunning
-                                    ? { main: "#008CFF", half: "rgba(0,140,255,0.5)", low: "rgba(0,140,255,0.15)" }
-                                    : getProgressColors(effectiveReport!.score)
+                            {effectiveReport && (() => {
+                                const pc = getProgressColors(effectiveReport.score)
                                 return (
                                     <div style={{ height: 6, borderRadius: 4, backgroundColor: pc.low, overflow: "hidden" }}>
                                         <div
                                             style={{
                                                 height: "100%",
-                                                width: `${isRunning ? scanProgress : effectiveReport!.score}%`,
+                                                width: `${effectiveReport.score}%`,
                                                 backgroundColor: pc.main,
                                                 borderRadius: "0 99px 99px 0",
                                                 transition: "width 0.4s ease",
