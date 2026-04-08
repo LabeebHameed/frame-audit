@@ -2975,11 +2975,14 @@ export function App(): React.ReactElement {
                                             </div>
                                         )
                                     })()}
-                                    {/* Fix issues prompt for reruns under 100% */}
-                                    {effectiveReport && auditReport && effectiveReport.score < 100 && (
+                                    {/* Delta vs audit baseline */}
+                                    {effectiveReport && auditReport && effectiveReport.score !== auditReport.score && (
                                         <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "1px 0" }}>
                                             <span style={{ fontSize: 12, fontWeight: 500, color: "#2fd157", lineHeight: 1 }}>
-                                                Fix issues
+                                                {effectiveReport.score > auditReport.score ? "+" : ""}{effectiveReport.score - auditReport.score}%
+                                            </span>
+                                            <span style={{ fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", lineHeight: 1 }}>
+                                                vs {auditReport.score}%
                                             </span>
                                         </div>
                                     )}
