@@ -419,19 +419,8 @@ function ScoreRing(props: { theme: ThemeMode }): React.ReactElement {
     const colors = THEME_COLORS[props.theme]
     const ringColor = colors.card.border
     return (
-        <svg width="72" height="72" viewBox="0 0 72 72" fill="none">
-            <circle cx="36" cy="36" r="30" stroke={ringColor} strokeWidth="3" strokeDasharray="6 4" />
-            <text
-                x="36"
-                y="40"
-                textAnchor="middle"
-                fontSize="16"
-                fontWeight="600"
-                fill={colors.text.quaternary}
-                fontFamily="Inter, -apple-system, sans-serif"
-            >
-                —
-            </text>
+        <svg width="72" height="72" viewBox="0 0 72 72" fill="none" style={{ animation: "spin 1.2s linear infinite" }}>
+            <circle cx="36" cy="36" r="30" stroke={ringColor} strokeWidth="3" strokeDasharray="12 8" strokeLinecap="round" />
         </svg>
     )
 }
@@ -3016,9 +3005,6 @@ export function App(): React.ReactElement {
                             })()}
                             {/* Stats strip */}
                             {effectiveReport && <StatsStrip report={effectiveReport} />}
-                            {!effectiveReport && !isRunning && (
-                                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.25)" }}>Not scanned yet</span>
-                            )}
                         </div>
 
                     <div className="audit-scroll" style={{ paddingBottom: 60, marginTop: 16 }}>
