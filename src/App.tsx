@@ -2896,7 +2896,7 @@ export function App(): React.ReactElement {
         <main style={{ backgroundColor: colors.bg, color: colors.text.primary, position: "relative" }}>
             {/* Tab bar */}
             <div style={{ padding: "8px 0 0", flexShrink: 0 }}>
-                <div style={{ display: "flex", backgroundColor: "#2a2a2a", borderRadius: 9, padding: 3, gap: 2 }}>
+                <div style={{ display: "flex", backgroundColor: "#2a2a2a", borderRadius: 9, padding: 3, gap: 2, margin: "0 -2px" }}>
                     <button
                         className="tab-switch-button"
                         onClick={() => setActiveTab("results")}
