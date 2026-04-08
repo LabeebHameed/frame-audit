@@ -2998,7 +2998,7 @@ export function App(): React.ReactElement {
                         </div>
                         )}
 
-                    <div className="audit-scroll" style={{ paddingBottom: 60, marginTop: 16 }}>
+                    <div className="audit-scroll" style={{ display: "flex", flexDirection: "column", paddingBottom: 60, marginTop: 16 }}>
                         {detailCheck && (
                             <DetailView
                                 check={detailCheck}
@@ -3030,7 +3030,7 @@ export function App(): React.ReactElement {
                             </>
                         )}
                         {!detailCheck && !effectiveReport && (
-                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 60, paddingBottom: 40, gap: 16 }}>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: 16 }}>
                                 <ScoreRing theme={theme} isRunning={isRunning} />
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
                                     <span style={{ fontSize: 13, fontWeight: 600, color: colors.text.primary }}>Audit your template</span>
