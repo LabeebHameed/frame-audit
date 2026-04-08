@@ -415,11 +415,11 @@ function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep:
 
 // --- Score ring for empty state ---
 
-function ScoreRing(props: { theme: ThemeMode }): React.ReactElement {
+function ScoreRing(props: { theme: ThemeMode; isRunning: boolean }): React.ReactElement {
     const colors = THEME_COLORS[props.theme]
-    const ringColor = colors.card.border
+    const ringColor = props.isRunning ? "#008CFF" : colors.card.border
     return (
-        <svg width="72" height="72" viewBox="0 0 72 72" fill="none" style={{ animation: "spin 1.2s linear infinite" }}>
+        <svg width="72" height="72" viewBox="0 0 72 72" fill="none" style={{ animation: props.isRunning ? "spin 2.2s linear infinite" : "none" }}>
             <circle cx="36" cy="36" r="30" stroke={ringColor} strokeWidth="3" strokeDasharray="12 8" strokeLinecap="round" />
         </svg>
     )
@@ -2667,7 +2667,6 @@ export function App(): React.ReactElement {
     const [detailCheck, setDetailCheck] = useState<CheckResult | null>(null)
     const [activeTab, setActiveTab] = useState<"results" | "padding">("results")
     const [dismissedItems, setDismissedItems] = useState<Map<string, Set<number>>>(new Map())
-    const [scoreVersion, setScoreVersion] = useState<number>(0)
     const [hasRunPageSpeedOnce, setHasRunPageSpeedOnce] = useState<boolean>(false)
     const [recheckingCheckId, setRecheckingCheckId] = useState<string | null>(null)
 
@@ -2727,7 +2726,6 @@ export function App(): React.ReactElement {
                 }
             }
             setExpandedSections(new Set())
-            setScoreVersion((v) => v + 1)
         } finally {
             setIsRunning(false)
         }
@@ -2878,7 +2876,6 @@ export function App(): React.ReactElement {
                     runAt: Date.now(),
                 }
             })
-            setScoreVersion((v) => v + 1)
         } finally {
             setRecheckingCheckId(null)
         }
@@ -2892,7 +2889,6 @@ export function App(): React.ReactElement {
             next.set(checkId, set)
             return next
         })
-        setScoreVersion((v) => v + 1)
     }, [])
 
     const colors = THEME_COLORS[theme]
@@ -2981,28 +2977,6 @@ export function App(): React.ReactElement {
                                     )}
                                 </div>
                             </div>
-                            {/* Progress bar */}
-                            {(isRunning || effectiveReport) && (() => {
-                                const pc = isRunning
-                                    ? { main: "#008CFF", half: "rgba(0,140,255,0.5)", low: "rgba(0,140,255,0.15)" }
-                                    : getProgressColors(effectiveReport!.score)
-                                return (
-                                    <div style={{ height: 6, borderRadius: 4, backgroundColor: pc.low, overflow: "hidden" }}>
-                                        <div
-                                            key={scoreVersion}
-                                            style={{
-                                                height: "100%",
-                                                width: `${isRunning ? scanProgress : (effectiveReport?.score ?? 0)}%`,
-                                                backgroundColor: pc.main,
-                                                borderRadius: "0 99px 99px 0",
-                                                transition: "width 0.4s ease",
-                                                minHeight: 1,
-                                                minWidth: 1,
-                                            }}
-                                        />
-                                    </div>
-                                )
-                            })()}
                             {/* Stats strip */}
                             {effectiveReport && <StatsStrip report={effectiveReport} />}
                         </div>
@@ -3040,7 +3014,7 @@ export function App(): React.ReactElement {
                         )}
                         {!detailCheck && !effectiveReport && (
                             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", paddingTop: 60, paddingBottom: 40, gap: 16 }}>
-                                <ScoreRing theme={theme} />
+                                <ScoreRing theme={theme} isRunning={isRunning} />
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
                                     <span style={{ fontSize: 13, fontWeight: 600, color: colors.text.primary }}>Audit your template</span>
                                     <span style={{ fontSize: 12, color: colors.text.tertiary, textAlign: "center", lineHeight: 1.5, maxWidth: 200 }}>
