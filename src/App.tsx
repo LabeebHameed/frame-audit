@@ -1,4 +1,4 @@
-import { framer, isFrameNode } from "framer-plugin"
+import { framer, isFrameNode, supportsBackgroundImageData } from "framer-plugin"
 import type { CanvasNode } from "framer-plugin"
 import React, { useState, useEffect, useCallback, memo, useRef } from "react"
 import { THEME_COLORS, type ThemeMode } from "./theme"
@@ -1129,19 +1129,17 @@ function DetailView(props: {
                     getNode?: (id: string) => Promise<unknown>
                     getNodesWithType?: (type: string) => Promise<ReadonlyArray<CanvasNode>>
                 }
-                const [frameNodes, textNodes, imageNodes, svgNodes, componentDefs, componentInstances] = await Promise.all([
-                    framerAny.getNodesWithType?.("FrameNode").catch(() => []) ?? [],
-                    framerAny.getNodesWithType?.("TextNode").catch(() => []) ?? [],
-                    framerAny.getNodesWithType?.("ImageNode").catch(() => []) ?? [],
-                    framerAny.getNodesWithType?.("SVGNode").catch(() => []) ?? [],
-                    framerAny.getNodesWithType?.("ComponentNode").catch(() => []) ?? [],
-                    framerAny.getNodesWithType?.("ComponentInstanceNode").catch(() => []) ?? [],
+                const [frameNodes, textNodes, svgNodes, componentDefs, componentInstances] = await Promise.all<ReadonlyArray<CanvasNode>>([
+                    framerAny.getNodesWithType?.("FrameNode") ?? Promise.resolve([]),
+                    framerAny.getNodesWithType?.("TextNode") ?? Promise.resolve([]),
+                    framerAny.getNodesWithType?.("SVGNode") ?? Promise.resolve([]),
+                    framerAny.getNodesWithType?.("ComponentNode") ?? Promise.resolve([]),
+                    framerAny.getNodesWithType?.("ComponentInstanceNode") ?? Promise.resolve([]),
                 ])
 
                 const allCanvasNodes = [
                     ...frameNodes,
                     ...textNodes,
-                    ...imageNodes,
                     ...svgNodes,
                     ...componentDefs,
                     ...componentInstances,
@@ -1211,7 +1209,6 @@ function DetailView(props: {
                 }
 
                 const textNodeIdSet = new Set(textNodes.map((n) => n.id))
-                const imageNodeIdSet = new Set(imageNodes.map((n) => n.id))
                 const nextTypes = new Map<string, NodeDisplayType>()
 
                 const resolveDisplayLabel = async (nodeId: string, node: Record<string, unknown> | undefined): Promise<string> => {
@@ -1236,7 +1233,7 @@ function DetailView(props: {
                     if (textNodeIdSet.has(nodeId)) {
                         nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
                         nextTypes.set(nodeId, "text")
-                    } else if (imageNodeIdSet.has(nodeId)) {
+                    } else if (rawNode && supportsBackgroundImageData(rawNode) && rawNode.backgroundImage !== null) {
                         nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
                         nextTypes.set(nodeId, "image")
                     } else if (rawNode) {
