@@ -5156,7 +5156,7 @@ async function checkActiveLinks(nodes: AllNodes): Promise<CheckResult> {
 function checkNaming(nodes: AllNodes): CheckResult {
     const id = "naming"
     const label = "Naming"
-    const DEFAULT_NAMES = new Set(["frame", "stack", "grid"])
+    const DEFAULT_NAMES = new Set(["frame", "stack", "grid", "masonry"])
 
     const flagged: Array<CheckItem> = []
     for (const frame of nodes.contentFrameNodes) {
@@ -5172,7 +5172,7 @@ function checkNaming(nodes: AllNodes): CheckResult {
     if (flagged.length === 0) {
         return makeCheck(id, label, "pass", "No default Framer names found", [], true)
     }
-    return makeCheck(id, label, "warning", `${flagged.length} layer(s) still use default Framer names (Frame / Stack / Grid)`, flagged, true)
+    return makeCheck(id, label, "warning", `${flagged.length} layer(s) still use default Framer names (Frame / Stack / Grid / Masonry)`, flagged, true)
 }
 
 // ---------------------------------------------------------------------------
