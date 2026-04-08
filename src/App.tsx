@@ -236,10 +236,17 @@ function RecheckButton(props: { onClick: () => void; disabled: boolean }): React
 }
 
 
-type NodeDisplayType = "text" | "horizontal-stack" | "vertical-stack" | "frame" | "grid" | "wrapped-stack"
+type NodeDisplayType = "text" | "image" | "horizontal-stack" | "vertical-stack" | "frame" | "grid" | "wrapped-stack"
 
 function NodeTypeIcon(props: { type: NodeDisplayType; color: string }): React.ReactElement {
     const c = props.color
+    if (props.type === "image") {
+        return (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+                <path d="M10 0C11.1046 1.49466e-05 12 0.89544 12 2V10C12 11.1046 11.1046 12 10 12H2C0.895431 12 0 11.1046 0 10V2C0 0.895431 0.895431 0 2 0H10ZM6.29297 5.40723C6.08935 5.14738 5.69363 5.15273 5.49707 5.41797L2.58398 9.34863C2.33953 9.6786 2.57565 10.1465 2.98633 10.1465H8.97949C9.39641 10.1465 9.6302 9.66605 9.37305 9.33789L6.29297 5.40723Z" fill={c} />
+            </svg>
+        )
+    }
     if (props.type === "wrapped-stack") {
         return (
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
@@ -1118,18 +1125,23 @@ function DetailView(props: {
             }
 
             try {
-                const framerAny = framer as unknown as { getNode?: (id: string) => Promise<unknown> }
-                const [frameNodes, textNodes, svgNodes, componentDefs, componentInstances] = await Promise.all([
-                    framer.getNodesWithType("FrameNode").catch(() => []),
-                    framer.getNodesWithType("TextNode").catch(() => []),
-                    framer.getNodesWithType("SVGNode").catch(() => []),
-                    framer.getNodesWithType("ComponentNode").catch(() => []),
-                    framer.getNodesWithType("ComponentInstanceNode").catch(() => []),
+                const framerAny = framer as unknown as {
+                    getNode?: (id: string) => Promise<unknown>
+                    getNodesWithType?: (type: string) => Promise<ReadonlyArray<CanvasNode>>
+                }
+                const [frameNodes, textNodes, imageNodes, svgNodes, componentDefs, componentInstances] = await Promise.all([
+                    framerAny.getNodesWithType?.("FrameNode").catch(() => []) ?? [],
+                    framerAny.getNodesWithType?.("TextNode").catch(() => []) ?? [],
+                    framerAny.getNodesWithType?.("ImageNode").catch(() => []) ?? [],
+                    framerAny.getNodesWithType?.("SVGNode").catch(() => []) ?? [],
+                    framerAny.getNodesWithType?.("ComponentNode").catch(() => []) ?? [],
+                    framerAny.getNodesWithType?.("ComponentInstanceNode").catch(() => []) ?? [],
                 ])
 
                 const allCanvasNodes = [
                     ...frameNodes,
                     ...textNodes,
+                    ...imageNodes,
                     ...svgNodes,
                     ...componentDefs,
                     ...componentInstances,
@@ -1199,6 +1211,7 @@ function DetailView(props: {
                 }
 
                 const textNodeIdSet = new Set(textNodes.map((n) => n.id))
+                const imageNodeIdSet = new Set(imageNodes.map((n) => n.id))
                 const nextTypes = new Map<string, NodeDisplayType>()
 
                 const resolveDisplayLabel = async (nodeId: string, node: Record<string, unknown> | undefined): Promise<string> => {
@@ -1223,6 +1236,9 @@ function DetailView(props: {
                     if (textNodeIdSet.has(nodeId)) {
                         nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
                         nextTypes.set(nodeId, "text")
+                    } else if (imageNodeIdSet.has(nodeId)) {
+                        nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
+                        nextTypes.set(nodeId, "image")
                     } else if (rawNode) {
                         nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
                         const layout = rawNode.layout
