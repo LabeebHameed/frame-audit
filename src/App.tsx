@@ -2662,7 +2662,6 @@ export function App(): React.ReactElement {
     const [theme, setTheme] = useState<ThemeMode>("dark")
     const [auditReport, setAuditReport] = useState<AuditReport | null>(null)
     const [isRunning, setIsRunning] = useState<boolean>(false)
-    const [scanProgress, setScanProgress] = useState<number>(0)
     const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
     const [detailCheck, setDetailCheck] = useState<CheckResult | null>(null)
     const [activeTab, setActiveTab] = useState<"results" | "padding">("results")
@@ -2682,11 +2681,10 @@ export function App(): React.ReactElement {
         if (!isOnPageSpeedDetail) {
             setDetailCheck(null)
         }
-        setScanProgress(0)
         setDismissedItems(new Map())
         try {
-            const report = await runAudit((done, total) => {
-                setScanProgress(Math.round((done / total) * 100))
+            const report = await runAudit(() => {
+                // Progress tracking during audit (not displayed)
             }, shouldRunPageSpeed, isOnPageSpeedDetail)
 
             const previousPageSpeedCheck = auditReport?.categories
@@ -2947,10 +2945,8 @@ export function App(): React.ReactElement {
                                 <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", whiteSpace: "nowrap" }}>
                                     {/* Score number */}
                                     {(() => {
-                                        const displayScore = effectiveReport ? effectiveReport.score : isRunning ? scanProgress : null
-                                        const pc = isRunning
-                                            ? { main: "#008CFF", half: "rgba(0,140,255,0.5)", low: "rgba(0,140,255,0.15)" }
-                                            : effectiveReport ? getProgressColors(effectiveReport.score) : null
+                                        const displayScore = effectiveReport ? effectiveReport.score : null
+                                        const pc = effectiveReport ? getProgressColors(effectiveReport.score) : null
                                         return (
                                             <div style={{ display: "flex", alignItems: "flex-end", gap: 4 }}>
                                                 <span style={{ fontSize: 25, fontWeight: 600, color: pc?.main ?? "rgba(255,255,255,0.25)", lineHeight: 1 }}>
@@ -2977,6 +2973,25 @@ export function App(): React.ReactElement {
                                     )}
                                 </div>
                             </div>
+                            {/* Progress bar - only show when results exist */}
+                            {effectiveReport && !isRunning && (() => {
+                                const pc = getProgressColors(effectiveReport!.score)
+                                return (
+                                    <div style={{ height: 6, borderRadius: 4, backgroundColor: pc.low, overflow: "hidden" }}>
+                                        <div
+                                            style={{
+                                                height: "100%",
+                                                width: `${effectiveReport!.score}%`,
+                                                backgroundColor: pc.main,
+                                                borderRadius: "0 99px 99px 0",
+                                                transition: "width 0.4s ease",
+                                                minHeight: 1,
+                                                minWidth: 1,
+                                            }}
+                                        />
+                                    </div>
+                                )
+                            })()}
                             {/* Stats strip */}
                             {effectiveReport && <StatsStrip report={effectiveReport} />}
                         </div>
