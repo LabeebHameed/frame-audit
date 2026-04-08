@@ -1,4 +1,4 @@
-import { framer, isFrameNode, supportsBackgroundImageData } from "framer-plugin"
+import { framer, isFrameNode, supportsBackgroundImage } from "framer-plugin"
 import type { CanvasNode } from "framer-plugin"
 import React, { useState, useEffect, useCallback, memo, useRef } from "react"
 import { THEME_COLORS, type ThemeMode } from "./theme"
@@ -1229,11 +1229,12 @@ function DetailView(props: {
                     const lockState = computeEffectiveLock(nodeId)
                     if (lockState !== undefined) nextLocks.set(nodeId, lockState)
 
-                    const rawNode = nodeById.get(nodeId) as unknown as Record<string, unknown> | undefined
+                    const node = nodeById.get(nodeId)
+                    const rawNode = node as unknown as Record<string, unknown> | undefined
                     if (textNodeIdSet.has(nodeId)) {
                         nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
                         nextTypes.set(nodeId, "text")
-                    } else if (rawNode && supportsBackgroundImageData(rawNode) && rawNode.backgroundImage !== null) {
+                    } else if (node && supportsBackgroundImage(node) && node.backgroundImage !== null) {
                         nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
                         nextTypes.set(nodeId, "image")
                     } else if (rawNode) {
