@@ -2678,6 +2678,7 @@ export function App(): React.ReactElement {
     const [detailCheck, setDetailCheck] = useState<CheckResult | null>(null)
     const [activeTab, setActiveTab] = useState<"results" | "padding">("results")
     const [dismissedItems, setDismissedItems] = useState<Map<string, Set<number>>>(new Map())
+    const [scanProgress, setScanProgress] = useState<number>(0)
     const [hasRunPageSpeedOnce, setHasRunPageSpeedOnce] = useState<boolean>(false)
     const [recheckingCheckId, setRecheckingCheckId] = useState<string | null>(null)
 
@@ -2693,10 +2694,11 @@ export function App(): React.ReactElement {
         if (!isOnPageSpeedDetail) {
             setDetailCheck(null)
         }
+        setScanProgress(0)
         setDismissedItems(new Map())
         try {
-            const report = await runAudit(() => {
-                // Progress tracking during audit (not displayed)
+            const report = await runAudit((done, total) => {
+                setScanProgress(Math.round((done / total) * 100))
             }, shouldRunPageSpeed, isOnPageSpeedDetail)
 
             const previousPageSpeedCheck = auditReport?.categories
@@ -2983,15 +2985,17 @@ export function App(): React.ReactElement {
                                     )}
                                 </div>
                             </div>
-                            {/* Progress bar - only show when results exist */}
-                            {effectiveReport && !isRunning && (() => {
-                                const pc = getProgressColors(effectiveReport!.score)
+                            {/* Progress bar - hide only on the initial screen */}
+                            {(effectiveReport || isRunning) && (() => {
+                                const pc = isRunning
+                                    ? { main: "#008CFF", half: "rgba(0,140,255,0.5)", low: "rgba(0,140,255,0.15)" }
+                                    : getProgressColors(effectiveReport!.score)
                                 return (
                                     <div style={{ height: 6, borderRadius: 4, backgroundColor: pc.low, overflow: "hidden" }}>
                                         <div
                                             style={{
                                                 height: "100%",
-                                                width: `${effectiveReport!.score}%`,
+                                                width: `${isRunning ? scanProgress : effectiveReport!.score}%`,
                                                 backgroundColor: pc.main,
                                                 borderRadius: "0 99px 99px 0",
                                                 transition: "width 0.4s ease",
