@@ -236,10 +236,17 @@ function RecheckButton(props: { onClick: () => void; disabled: boolean }): React
 }
 
 
-type NodeDisplayType = "text" | "horizontal-stack" | "vertical-stack" | "frame" | "grid"
+type NodeDisplayType = "text" | "horizontal-stack" | "vertical-stack" | "frame" | "grid" | "wrapped-stack"
 
 function NodeTypeIcon(props: { type: NodeDisplayType; color: string }): React.ReactElement {
     const c = props.color
+    if (props.type === "wrapped-stack") {
+        return (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+                <path d="M5.49414 12H1C0.447716 12 0 11.5523 0 11V8.50391H5.49414V12ZM12 10.8955C12 11.4478 11.5523 11.8955 11 11.8955H6.50684V4.39746H12V10.8955ZM5.50781 7.50684H0.0136719V1.00195C0.0137044 0.449777 0.461519 0.00208503 1.01367 0.00195312H5.50781V7.50684ZM11 0C11.5523 0 12 0.447743 12 1V3.5127H6.50684V0H11Z" fill={c} />
+            </svg>
+        )
+    }
     if (props.type === "horizontal-stack") {
         return (
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
@@ -1220,8 +1227,13 @@ function DetailView(props: {
                         nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
                         const layout = rawNode.layout
                         if (layout === "stack") {
-                            const direction = rawNode.stackDirection
-                            nextTypes.set(nodeId, direction === "horizontal" ? "horizontal-stack" : "vertical-stack")
+                            const stackWrapEnabled = rawNode.stackWrapEnabled === true
+                            if (stackWrapEnabled) {
+                                nextTypes.set(nodeId, "wrapped-stack")
+                            } else {
+                                const direction = rawNode.stackDirection
+                                nextTypes.set(nodeId, direction === "horizontal" ? "horizontal-stack" : "vertical-stack")
+                            }
                         } else if (layout === "grid") {
                             nextTypes.set(nodeId, "grid")
                         } else {
@@ -2896,7 +2908,7 @@ export function App(): React.ReactElement {
         <main style={{ backgroundColor: colors.bg, color: colors.text.primary, position: "relative" }}>
             {/* Tab bar */}
             <div style={{ padding: "8px 0 0", flexShrink: 0 }}>
-                <div style={{ display: "flex", backgroundColor: "#2a2a2a", borderRadius: 9, padding: 3, gap: 2, margin: "0 -2px" }}>
+                <div style={{ display: "flex", backgroundColor: "#2a2a2a", borderRadius: 9, padding: 3, gap: 2, margin: "0 -4px" }}>
                     <button
                         className="tab-switch-button"
                         onClick={() => setActiveTab("results")}
