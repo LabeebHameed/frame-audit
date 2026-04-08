@@ -2938,7 +2938,8 @@ export function App(): React.ReactElement {
 
             {/* Results tab — always mounted, hidden when inactive so state is preserved */}
             <div style={{ display: activeTab === "results" ? "flex" : "none", flexDirection: "column", flex: 1, paddingTop: 12 }}>
-                        {/* Score area */}
+                        {/* Score area - only show when results exist */}
+                        {effectiveReport && (
                         <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingBottom: 4, flexShrink: 0 }}>
                             {/* Score number + delta */}
                             <div style={{ display: "flex", flexDirection: "column" }}>
@@ -2995,6 +2996,7 @@ export function App(): React.ReactElement {
                             {/* Stats strip */}
                             {effectiveReport && <StatsStrip report={effectiveReport} />}
                         </div>
+                        )}
 
                     <div className="audit-scroll" style={{ paddingBottom: 60, marginTop: 16 }}>
                         {detailCheck && (
