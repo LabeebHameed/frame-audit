@@ -2086,10 +2086,83 @@ function getFramePageLabel(nodes: AllNodes, nodeId: string): string | null {
     return null
 }
 
+const CHECK_IDS_WITHOUT_PAGE_LABELS = new Set<string>([
+    "alt-text",
+    "duplicate-cms-content",
+    "empty-cms-fields",
+    "google-pagespeed",
+])
+
+async function getNodePageLabel(nodes: AllNodes, nodeId: string, cache: Map<string, string | null>): Promise<string | null> {
+    if (cache.has(nodeId)) return cache.get(nodeId) ?? null
+
+    const page = nodes.pages.find((candidate) => candidate.id === nodeId)
+    if (page) {
+        const pageLabel = getPageDisplayLabel(page as AnyNode)
+        cache.set(nodeId, pageLabel)
+        return pageLabel
+    }
+
+    const framePageLabel = getFramePageLabel(nodes, nodeId)
+    if (framePageLabel) {
+        cache.set(nodeId, framePageLabel)
+        return framePageLabel
+    }
+
+    const framerAny = framer as unknown as {
+        getNode?: (id: string) => Promise<unknown>
+    }
+
+    if (typeof framerAny.getNode !== "function") {
+        cache.set(nodeId, null)
+        return null
+    }
+
+    const pageIds = new Set(nodes.pages.map((candidate) => candidate.id))
+    const visited = new Set<string>()
+    let current: unknown = await framerAny.getNode(nodeId).catch(() => null)
+
+    while (current && typeof current === "object") {
+        const currentRecord = current as Record<string, unknown>
+        const currentId = typeof currentRecord.id === "string" ? currentRecord.id : null
+        if (currentId && visited.has(currentId)) break
+        if (currentId) visited.add(currentId)
+
+        if (currentId && pageIds.has(currentId)) {
+            const pageLabel = getPageDisplayLabel(currentRecord as AnyNode)
+            cache.set(nodeId, pageLabel)
+            return pageLabel
+        }
+
+        const getParent = currentRecord.getParent
+        if (typeof getParent !== "function") break
+
+        current = await getParent.call(current).catch(() => null)
+    }
+
+    cache.set(nodeId, null)
+    return null
+}
+
 function withFramePageLabel(nodes: AllNodes, item: CheckItem, nodeId: string): CheckItem {
     const pageLabel = getFramePageLabel(nodes, nodeId)
     if (!pageLabel) return item
     return { ...item, pageLabel }
+}
+
+async function applyPageLabelsToCheckResult(nodes: AllNodes, check: CheckResult, cache: Map<string, string | null>): Promise<CheckResult> {
+    if (CHECK_IDS_WITHOUT_PAGE_LABELS.has(check.id) || check.items.length === 0) return check
+
+    let didChange = false
+    const items = await Promise.all(check.items.map(async (item) => {
+        if (item.pageLabel || item.nodeId === null) return item
+        const pageLabel = await getNodePageLabel(nodes, item.nodeId, cache)
+        if (!pageLabel) return item
+        didChange = true
+        return { ...item, pageLabel }
+    }))
+
+    return didChange ? { ...check, items } : check
 }
 
 type PublishedPageTagAudit = {
@@ -2569,11 +2642,13 @@ async function checkRepetitiveText(nodes: AllNodes): Promise<CheckResult> {
             textSourceMap.set(normalized, sourceMap)
         }
 
+        const pageLabel = getPageDisplayLabel(page)
+
         for (const [text, sourcesMap] of textSourceMap) {
             if (sourcesMap.size > 1) {
                 const preview = text.length > 35 ? text.slice(0, 35) + "…" : text
                 for (const { nodeId } of sourcesMap.values()) {
-                    found.push({ label: preview, nodeId })
+                    found.push({ label: preview, nodeId, pageLabel })
                 }
             }
         }
@@ -5115,6 +5190,7 @@ function calculateScore(categories: ReadonlyArray<CheckCategory>): ScoreResult {
         for (const check of category.checks) {
             if (!check.isProgrammatic) continue
             if (check.status === "skip") continue
+            if (check.id === "google-pagespeed") continue
             totalProgrammatic++
             if (check.status === "pass") {
                 passed++
@@ -5981,186 +6057,7 @@ async function checkUnusedAssets(nodes: AllNodes): Promise<CheckResult> {
         // getTextStyles not available — skip
     }
 
-    // ── 4. Unused links ───────────────────────────────────────────────────────
-    // Framer links are exposed as component link variables.
-    // A link variable is "used" when its ID appears in node/control structures.
-    try {
-        const linkStyles: unknown[] = [...globalVariables, ...componentVariables].filter((variable) => {
-            const record = variable as Record<string, unknown>
-            return record.type === "link"
-        })
-
-        // Undocumented Framer API fallbacks for link style registries.
-        const linkRegistryStyles: unknown[] = []
-        const getLinkStyles = framerAny.getLinkStyles
-        const getLinks = framerAny.getLinks
-        const getNodesWithType = framerAny.getNodesWithType
-
-        if (typeof getLinkStyles === "function") {
-            try {
-                const styles = await (getLinkStyles as () => Promise<unknown>)()
-                if (Array.isArray(styles)) linkRegistryStyles.push(...styles)
-            } catch {
-                // ignore
-            }
-        }
-
-        if (typeof getLinks === "function") {
-            try {
-                const styles = await (getLinks as () => Promise<unknown>)()
-                if (Array.isArray(styles)) linkRegistryStyles.push(...styles)
-            } catch {
-                // ignore
-            }
-        }
-
-        if (typeof getNodesWithType === "function") {
-            for (const candidateType of ["LinkStyleNode", "LinkNode", "LinkTokenNode"]) {
-                try {
-                    const styles = await (getNodesWithType as (t: string) => Promise<unknown>)(candidateType)
-                    if (Array.isArray(styles) && styles.length > 0) {
-                        linkRegistryStyles.push(...styles)
-                    }
-                } catch {
-                    // ignore
-                }
-            }
-        }
-        const linkCandidates = [...linkStyles, ...linkRegistryStyles]
-
-        if (linkCandidates.length > 0) {
-            const allLinkStyleIds = new Set<string>()
-            for (const style of linkCandidates) {
-                const styleId = getRegistryItemId(style)
-                if (styleId !== null) allLinkStyleIds.add(styleId)
-            }
-            if (allLinkStyleIds.size > 0) {
-                const usedLinkStyleIds = collectReferencedIds(
-                    [
-                        ...expandedStyleNodes.flatMap(styleSourceValuesForNode),
-                        ...nodes.collections,
-                    ],
-                    allLinkStyleIds,
-                    true,
-                )
-                for (const style of linkCandidates) {
-                    const styleId = getRegistryItemId(style)
-                    if (styleId !== null && !usedLinkStyleIds.has(styleId)) {
-                        flagged.push({ label: `Link '${getRegistryItemName(style)}': not applied to any link`, nodeId: null })
-                    }
-                }
-            }
-        } else {
-            // Fallback: in many Framer files, "links" in the style panel are text styles
-            // grouped under Link/*. Detect unused ones explicitly from text styles.
-            const textStyles = await framer.getTextStyles().catch(() => [])
-            const linkTextStyles = textStyles.filter((style) => {
-                const record = style as unknown as Record<string, unknown>
-                const name = typeof record.name === "string" ? record.name : ""
-                const path = typeof record.path === "string" ? record.path : ""
-                return /(^|\/)link(\/|$)|\blink\b/i.test(path) || /\blink\b/i.test(name)
-            })
-
-            if (linkTextStyles.length > 0) {
-                const linkTextStyleIds = new Set<string>()
-                for (const style of linkTextStyles) {
-                    const styleId = getRegistryItemId(style)
-                    if (styleId !== null) linkTextStyleIds.add(styleId)
-                }
-
-                const usedLinkTextStyleIds = collectReferencedIds(
-                    [
-                        ...expandedStyleNodes.flatMap(styleSourceValuesForNode),
-                        ...nodes.collections,
-                    ],
-                    linkTextStyleIds,
-                )
-                for (const style of linkTextStyles) {
-                    const styleId = getRegistryItemId(style)
-                    if (styleId !== null && !usedLinkTextStyleIds.has(styleId)) {
-                        flagged.push({ label: `Link style '${getRegistryItemName(style)}': not applied to any link`, nodeId: null })
-                    }
-                }
-            } else {
-                // Structural fallback: infer link "assets" from component link controls.
-                // This is used when runtime APIs do not expose link registries/variables.
-                const linkControlCandidates = new Map<string, { label: string; componentIdentifier: string; controlKey: string }>()
-                const componentNameByIdentifier = new Map<string, string>()
-                for (const def of nodes.componentDefinitionNodes) {
-                    const raw = def as Record<string, unknown>
-                    const componentIdentifier = typeof raw.componentIdentifier === "string" ? raw.componentIdentifier : null
-                    if (!componentIdentifier) continue
-
-                    componentNameByIdentifier.set(componentIdentifier, getNodeName(def as AnyNode))
-
-                    const entries = extractLinkControlEntriesGlobal(raw)
-                    for (const { key: controlKey } of entries) {
-                        const candidateId = `${componentIdentifier}:${controlKey}`
-                        const componentName = getNodeName(def as AnyNode)
-                        linkControlCandidates.set(candidateId, {
-                            label: `Link control '${componentName}.${controlKey}'`,
-                            componentIdentifier,
-                            controlKey,
-                        })
-                    }
-                }
-
-                // If definitions don't expose link-like controls, infer candidates from instances.
-                for (const instance of nodes.componentNodes) {
-                    const raw = instance as Record<string, unknown>
-                    const componentIdentifier = typeof raw.componentIdentifier === "string" ? raw.componentIdentifier : null
-                    if (!componentIdentifier) continue
-
-                    const entries = extractLinkControlEntriesGlobal(raw)
-                    for (const { key: controlKey } of entries) {
-                        const candidateId = `${componentIdentifier}:${controlKey}`
-                        if (linkControlCandidates.has(candidateId)) continue
-
-                        const componentName = componentNameByIdentifier.get(componentIdentifier) ?? getNodeName(instance as AnyNode)
-                        linkControlCandidates.set(candidateId, {
-                            label: `Link control '${componentName}.${controlKey}'`,
-                            componentIdentifier,
-                            controlKey,
-                        })
-                    }
-                }
-
-                const usedLinkControlCandidateIds = new Set<string>()
-                for (const instance of nodes.componentNodes) {
-                    const raw = instance as Record<string, unknown>
-                    const componentIdentifier = typeof raw.componentIdentifier === "string" ? raw.componentIdentifier : null
-                    if (!componentIdentifier) continue
-
-                    const entries = extractLinkControlEntriesGlobal(raw)
-
-                    for (const { key: controlKey, value: control } of entries) {
-                        const candidateId = `${componentIdentifier}:${controlKey}`
-                        if (!linkControlCandidates.has(candidateId)) continue
-
-                        if (typeof control === "object" && control !== null) {
-                            const controlRecord = control as Record<string, unknown>
-                            const linkValue = "value" in controlRecord ? controlRecord.value : control
-                                if (!isEmptyLinkValueGlobal(linkValue)) {
-                                usedLinkControlCandidateIds.add(candidateId)
-                            }
-                        } else if (!isEmptyLinkValueGlobal(control)) {
-                            usedLinkControlCandidateIds.add(candidateId)
-                        }
-                    }
-                }
-
-                for (const [candidateId, candidate] of linkControlCandidates) {
-                    if (!usedLinkControlCandidateIds.has(candidateId)) {
-                        flagged.push({ label: `${candidate.label}: not used by any instance`, nodeId: null })
-                    }
-                }
-            }
-        }
-    } catch {
-        // Link variables unavailable — skip
-    }
-
-    // ── 5. Unused code files (no component exports placed on canvas) ─────────
+    // ── 4. Unused code files (no component exports placed on canvas) ─────────
     // A code file with component exports is "unused" if none of its exported
     // component insertURLs appear in any ComponentInstanceNode on any page.
     for (const codeFile of nodes.codeFiles) {
@@ -6560,10 +6457,16 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
         },
     ]
 
-    const scoreResult = calculateScore(categories)
+    const pageLabelCache = new Map<string, string | null>()
+    const normalizedCategories = await Promise.all(categories.map(async (category) => ({
+        ...category,
+        checks: await Promise.all(category.checks.map((check) => applyPageLabelsToCheckResult(nodes, check, pageLabelCache))),
+    })))
+
+    const scoreResult = calculateScore(normalizedCategories)
 
     return {
-        categories,
+        categories: normalizedCategories,
         score: scoreResult.score,
         scoreLabel: scoreResult.scoreLabel,
         totalProgrammatic: scoreResult.totalProgrammatic,
@@ -6577,46 +6480,53 @@ async function runAudit(onProgress?: (done: number, total: number) => void, enab
 async function runRequirementCheck(checkId: string, enablePageSpeed: boolean = true, forcePageSpeedRefresh: boolean = false): Promise<CheckResult | null> {
     const nodes = await fetchAllNodes()
 
+    let result: CheckResult | null
+
     switch (checkId) {
-        case "alt-text": return checkAltText(nodes)
-        case "large-uncompressed-assets": return checkLargeUncompressedAssets(nodes)
-        case "component-file-structure": return checkComponentFileStructure(nodes)
-        case "unused-assets": return checkUnusedAssets(nodes)
-        case "placeholder-text": return checkRepetitiveText(nodes)
-        case "lorem-ipsum": return checkLoremIpsum(nodes)
-        case "spelling-check": return checkSpelling(nodes)
-        case "default-fonts": return checkDefaultFonts(nodes)
-        case "text-legibility": return checkTextLegibility(nodes)
-        case "consistent-text-styles": return checkConsistentTextStyles(nodes)
-        case "text-styles": return checkTextStyles(nodes)
-        case "custom-404-page": return checkCustom404Page(nodes)
-        case "naming": return checkNaming(nodes)
-        case "color-styles": return checkColorStyles(nodes)
-        case "color-contrast": return checkColorContrast(nodes)
-        case "page-settings": return checkPageSettings(nodes)
-        case "nav-footer-tags": return checkNavFooterTags(nodes)
-        case "tag-checker": return checkTagChecker(nodes)
-        case "h1-tags": return checkH1Tags(nodes)
-        case "heading-hierarchy": return checkHeadingHierarchy(nodes)
-        case "responsive-layout": return checkResponsiveLayout(nodes)
-        case "auto-height": return checkAutoHeight(nodes)
-        case "overflow": return checkOverflow(nodes)
-        case "breakpoint-widths": return checkBreakpointWidths(nodes)
-        case "mailto-tel-links": return checkMailtoTelLinks(nodes)
-        case "hover-state-links": return checkHoverStateLinks(nodes)
-        case "broken-internal-links": return checkBrokenInternalLinks(nodes)
-        case "links-to-404": return checkLinksTo404Page(nodes)
-        case "active-links": return checkActiveLinks(nodes)
-        case "contact-form": return checkContactFormSendTo(nodes)
-        case "duplicate-cms-content": return checkDuplicateCmsContent(nodes)
-        case "empty-cms-fields": return checkEmptyCmsFields(nodes)
+        case "alt-text": result = await checkAltText(nodes); break
+        case "large-uncompressed-assets": result = await checkLargeUncompressedAssets(nodes); break
+        case "component-file-structure": result = await checkComponentFileStructure(nodes); break
+        case "unused-assets": result = await checkUnusedAssets(nodes); break
+        case "placeholder-text": result = await checkRepetitiveText(nodes); break
+        case "lorem-ipsum": result = await checkLoremIpsum(nodes); break
+        case "spelling-check": result = await checkSpelling(nodes); break
+        case "default-fonts": result = await checkDefaultFonts(nodes); break
+        case "text-legibility": result = await checkTextLegibility(nodes); break
+        case "consistent-text-styles": result = await checkConsistentTextStyles(nodes); break
+        case "text-styles": result = await checkTextStyles(nodes); break
+        case "custom-404-page": result = await checkCustom404Page(nodes); break
+        case "naming": result = await checkNaming(nodes); break
+        case "color-styles": result = await checkColorStyles(nodes); break
+        case "color-contrast": result = await checkColorContrast(nodes); break
+        case "page-settings": result = await checkPageSettings(nodes); break
+        case "nav-footer-tags": result = await checkNavFooterTags(nodes); break
+        case "tag-checker": result = await checkTagChecker(nodes); break
+        case "h1-tags": result = await checkH1Tags(nodes); break
+        case "heading-hierarchy": result = await checkHeadingHierarchy(nodes); break
+        case "responsive-layout": result = await checkResponsiveLayout(nodes); break
+        case "auto-height": result = await checkAutoHeight(nodes); break
+        case "overflow": result = await checkOverflow(nodes); break
+        case "breakpoint-widths": result = await checkBreakpointWidths(nodes); break
+        case "mailto-tel-links": result = await checkMailtoTelLinks(nodes); break
+        case "hover-state-links": result = await checkHoverStateLinks(nodes); break
+        case "broken-internal-links": result = await checkBrokenInternalLinks(nodes); break
+        case "links-to-404": result = await checkLinksTo404Page(nodes); break
+        case "active-links": result = await checkActiveLinks(nodes); break
+        case "contact-form": result = await checkContactFormSendTo(nodes); break
+        case "duplicate-cms-content": result = await checkDuplicateCmsContent(nodes); break
+        case "empty-cms-fields": result = await checkEmptyCmsFields(nodes); break
         case "google-pagespeed":
-            return enablePageSpeed
-                ? checkGooglePageSpeed(nodes, forcePageSpeedRefresh)
+            result = enablePageSpeed
+                ? await checkGooglePageSpeed(nodes, forcePageSpeedRefresh)
                 : skipCheck("google-pagespeed", "Google PageSpeed", "Check disabled")
+            break
         default:
-            return null
+            result = null
+            break
     }
+
+    const pageLabelCache = new Map<string, string | null>()
+    return result ? await applyPageLabelsToCheckResult(nodes, result, pageLabelCache) : null
 }
 
 // ---------------------------------------------------------------------------

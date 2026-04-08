@@ -61,6 +61,14 @@ button:active:not(:disabled) {
     transform: scale(0.97);
 }
 
+.tab-switch-button,
+.tab-switch-button:hover:not(:disabled),
+.tab-switch-button:active:not(:disabled) {
+    transition: none;
+    transform: none;
+    opacity: 1;
+}
+
 .panel-slider {
     -webkit-appearance: none;
     -moz-appearance: none;

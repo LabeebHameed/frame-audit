@@ -18,6 +18,15 @@ function computeEffectiveReport(
     const categories = report.categories.map((cat) => ({
         ...cat,
         checks: cat.checks.map((check) => {
+            // Repetitive text without actionable items should never stay in warning/fail.
+            if (check.id === "placeholder-text" && check.items.length === 0 && (check.status === "warning" || check.status === "fail")) {
+                return {
+                    ...check,
+                    status: "pass" as const,
+                    detail: "No repetitive text found",
+                }
+            }
+
             if ((check.status !== "warning" && check.status !== "fail") || check.items.length === 0) return check
             const dismissedForCheck = dismissed.get(check.id)
             if (!dismissedForCheck || dismissedForCheck.size < check.items.length) return check
@@ -56,11 +65,10 @@ function detectTheme(): ThemeMode {
     return "dark"
 }
 
-function getScoreColor(score: number, theme: ThemeMode): string {
-    const s = THEME_COLORS[theme].status
-    if (score >= 90) return s.pass
-    if (score >= 70) return s.warning
-    return s.fail
+function getProgressColors(score: number): { main: string; half: string; low: string } {
+    if (score >= 90) return { main: "#2fd157", half: "rgba(47,209,87,0.5)", low: "rgba(47,209,87,0.15)" }
+    if (score >= 70) return { main: "#fdba13", half: "rgba(253,186,19,0.5)", low: "rgba(253,186,19,0.15)" }
+    return { main: "#ff1a00", half: "rgba(255,26,0,0.5)", low: "rgba(255,26,0,0.15)" }
 }
 
 function getStatusColor(status: string, theme: ThemeMode): string {
@@ -75,28 +83,48 @@ function getStatusColor(status: string, theme: ThemeMode): string {
 
 function CheckIcon(props: { color: string }): React.ReactElement {
     return (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-            <circle cx="7" cy="7" r="6.5" stroke={props.color} strokeWidth="1.3" />
-            <path d="M4.5 7L6.2 8.8L9.5 5.5" stroke={props.color} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+            <path d="M6.5 12.5C9.81371 12.5 12.5 9.81371 12.5 6.5C12.5 3.18629 9.81371 0.5 6.5 0.5C3.18629 0.5 0.5 3.18629 0.5 6.5C0.5 9.81371 3.18629 12.5 6.5 12.5Z" fill="#2FD157" fillOpacity="0.2"/>
+            <path d="M3.8 6.5L5.6 8.3L9.2 4.7M12.5 6.5C12.5 9.81371 9.81371 12.5 6.5 12.5C3.18629 12.5 0.5 9.81371 0.5 6.5C0.5 3.18629 3.18629 0.5 6.5 0.5C9.81371 0.5 12.5 3.18629 12.5 6.5Z" stroke="#2FD157" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
     )
 }
 
 function WarnIcon(props: { color: string }): React.ReactElement {
     return (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-            <path d="M7 1.5L13 12H1L7 1.5Z" stroke={props.color} strokeWidth="1.3" strokeLinejoin="round" />
-            <path d="M7 6V8.5" stroke={props.color} strokeWidth="1.3" strokeLinecap="round" />
-            <circle cx="7" cy="10.5" r="0.6" fill={props.color} />
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+            <path d="M3.69569 1.23431C3.78216 1.14784 3.8254 1.1046 3.87586 1.07368C3.92059 1.04627 3.96937 1.02606 4.02038 1.01382C4.07793 1 4.13908 1 4.26137 1H7.73863C7.86092 1 7.92207 1 7.97961 1.01382C8.03063 1.02606 8.07941 1.04627 8.12414 1.07368C8.1746 1.1046 8.21784 1.14784 8.30431 1.23431L10.7657 3.69569C10.8522 3.78216 10.8954 3.8254 10.9263 3.87586C10.9537 3.92059 10.9739 3.96937 10.9862 4.02038C11 4.07793 11 4.13908 11 4.26137V7.73863C11 7.86092 11 7.92207 10.9862 7.97961C10.9739 8.03063 10.9537 8.07941 10.9263 8.12414C10.8954 8.1746 10.8522 8.21784 10.7657 8.30431L8.30431 10.7657C8.21784 10.8522 8.1746 10.8954 8.12414 10.9263C8.07941 10.9537 8.03063 10.9739 7.97961 10.9862C7.92207 11 7.86092 11 7.73863 11H4.26137C4.13908 11 4.07793 11 4.02038 10.9862C3.96937 10.9739 3.92059 10.9537 3.87586 10.9263C3.8254 10.8954 3.78216 10.8522 3.69569 10.7657L1.23431 8.30431C1.14784 8.21784 1.1046 8.1746 1.07368 8.12414C1.04627 8.07941 1.02606 8.03063 1.01382 7.97961C1 7.92207 1 7.86092 1 7.73863V4.26137C1 4.13908 1 4.07793 1.01382 4.02038C1.02606 3.96937 1.04627 3.92059 1.07368 3.87586C1.1046 3.8254 1.14784 3.78216 1.23431 3.69569L3.69569 1.23431Z" fill="#FDBA13" fillOpacity="0.2"/>
+            <path d="M6 4V6M6 8H6.005M1 4.26137V7.73863C1 7.86092 1 7.92207 1.01382 7.97961C1.02606 8.03063 1.04627 8.07941 1.07368 8.12414C1.1046 8.1746 1.14784 8.21784 1.23431 8.30431L3.69569 10.7657C3.78216 10.8522 3.8254 10.8954 3.87586 10.9263C3.92059 10.9537 3.96937 10.9739 4.02038 10.9862C4.07793 11 4.13908 11 4.26137 11H7.73863C7.86092 11 7.92207 11 7.97961 10.9862C8.03063 10.9739 8.07941 10.9537 8.12414 10.9263C8.1746 10.8954 8.21784 10.8522 8.30431 10.7657L10.7657 8.30431C10.8522 8.21784 10.8954 8.1746 10.9263 8.12414C10.9537 8.07941 10.9739 8.03063 10.9862 7.97961C11 7.92207 11 7.86092 11 7.73863V4.26137C11 4.13908 11 4.07793 10.9862 4.02038C10.9739 3.96937 10.9537 3.92059 10.9263 3.87586C10.8954 3.8254 10.8522 3.78216 10.7657 3.69569L8.30431 1.23431C8.21784 1.14784 8.1746 1.1046 8.12414 1.07368C8.07941 1.04627 8.03063 1.02606 7.97961 1.01382C7.92207 1 7.86092 1 7.73863 1H4.26137C4.13908 1 4.07793 1 4.02038 1.01382C3.96937 1.02606 3.92059 1.04627 3.87586 1.07368C3.8254 1.1046 3.78216 1.14784 3.69569 1.23431L1.23431 3.69569C1.14784 3.78216 1.1046 3.8254 1.07368 3.87586C1.04627 3.92059 1.02606 3.96937 1.01382 4.02038C1 4.07793 1 4.13908 1 4.26137Z" stroke="#FDBA13" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+    )
+}
+
+function ResolvedWarnIcon(): React.ReactElement {
+    return (
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <path
+                d="M5.00004 7.99999L7.00004 9.99999L11 5.99999M14.6667 7.99999C14.6667 11.6819 11.6819 14.6667 8.00004 14.6667C4.31814 14.6667 1.33337 11.6819 1.33337 7.99999C1.33337 4.3181 4.31814 1.33333 8.00004 1.33333C11.6819 1.33333 14.6667 4.3181 14.6667 7.99999Z"
+                stroke="#26C200"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
         </svg>
     )
 }
 
 function FailIcon(props: { color: string }): React.ReactElement {
     return (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-            <circle cx="7" cy="7" r="6.5" stroke={props.color} strokeWidth="1.3" />
-            <path d="M4.5 4.5L9.5 9.5M9.5 4.5L4.5 9.5" stroke={props.color} strokeWidth="1.3" strokeLinecap="round" />
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+            <g clipPath="url(#clip0_1404_135)">
+                <path d="M3.69569 1.23431C3.78216 1.14784 3.8254 1.1046 3.87586 1.07368C3.92059 1.04627 3.96937 1.02606 4.02038 1.01382C4.07793 1 4.13908 1 4.26137 1H7.73863C7.86092 1 7.92207 1 7.97961 1.01382C8.03063 1.02606 8.07941 1.04627 8.12414 1.07368C8.1746 1.1046 8.21784 1.14784 8.30431 1.23431L10.7657 3.69569C10.8522 3.78216 10.8954 3.8254 10.9263 3.87586C10.9537 3.92059 10.9739 3.96937 10.9862 4.02038C11 4.07793 11 4.13908 11 4.26137V7.73863C11 7.86092 11 7.92207 10.9862 7.97961C10.9739 8.03063 10.9537 8.07941 10.9263 8.12414C10.8954 8.1746 10.8522 8.21784 10.7657 8.30431L8.30431 10.7657C8.21784 10.8522 8.1746 10.8954 8.12414 10.9263C8.07941 10.9537 8.03063 10.9739 7.97961 10.9862C7.92207 11 7.86092 11 7.73863 11H4.26137C4.13908 11 4.07793 11 4.02038 10.9862C3.96937 10.9739 3.92059 10.9537 3.87586 10.9263C3.8254 10.8954 3.78216 10.8522 3.69569 10.7657L1.23431 8.30431C1.14784 8.21784 1.1046 8.1746 1.07368 8.12414C1.04627 8.07941 1.02606 8.03063 1.01382 7.97961C1 7.92207 1 7.86092 1 7.73863V4.26137C1 4.13908 1 4.07793 1.01382 4.02038C1.02606 3.96937 1.04627 3.92059 1.07368 3.87586C1.1046 3.8254 1.14784 3.78216 1.23431 3.69569L3.69569 1.23431Z" fill="#FF1A00" fillOpacity="0.2"/>
+                <path d="M6 4V6M6 8H6.005M1 4.26137V7.73863C1 7.86092 1 7.92207 1.01382 7.97961C1.02606 8.03063 1.04627 8.07941 1.07368 8.12414C1.1046 8.1746 1.14784 8.21784 1.23431 8.30431L3.69569 10.7657C3.78216 10.8522 3.8254 10.8954 3.87586 10.9263C3.92059 10.9537 3.96937 10.9739 4.02038 10.9862C4.07793 11 4.13908 11 4.26137 11H7.73863C7.86092 11 7.92207 11 7.97961 10.9862C8.03063 10.9739 8.07941 10.9537 8.12414 10.9263C8.1746 10.8954 8.21784 10.8522 8.30431 10.7657L10.7657 8.30431C10.8522 8.21784 10.8954 8.1746 10.9263 8.12414C10.9537 8.07941 10.9739 8.03063 10.9862 7.97961C11 7.92207 11 7.86092 11 7.73863V4.26137C11 4.13908 11 4.07793 10.9862 4.02038C10.9739 3.96937 10.9537 3.92059 10.9263 3.87586C10.8954 3.8254 10.8522 3.78216 10.7657 3.69569L8.30431 1.23431C8.21784 1.14784 8.1746 1.1046 8.12414 1.07368C8.07941 1.04627 8.03063 1.02606 7.97961 1.01382C7.92207 1 7.86092 1 7.73863 1H4.26137C4.13908 1 4.07793 1 4.02038 1.01382C3.96937 1.02606 3.92059 1.04627 3.87586 1.07368C3.8254 1.1046 3.78216 1.14784 3.69569 1.23431L1.23431 3.69569C1.14784 3.78216 1.1046 3.8254 1.07368 3.87586C1.04627 3.92059 1.02606 3.96937 1.01382 4.02038C1 4.07793 1 4.13908 1 4.26137Z" stroke="#FF1A00" strokeLinecap="round" strokeLinejoin="round"/>
+            </g>
+            <defs>
+                <clipPath id="clip0_1404_135">
+                    <rect width="12" height="12" fill="white"/>
+                </clipPath>
+            </defs>
         </svg>
     )
 }
@@ -135,15 +163,48 @@ function ChevronIcon(props: { open: boolean; color: string }): React.ReactElemen
     )
 }
 
-function LockIcon(props: { color: string }): React.ReactElement {
+function InfoIcon(props: { color: string }): React.ReactElement {
     return (
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
             <path
-                fill={props.color}
-                fillRule="evenodd"
-                d="M5.25 10.055V8a6.75 6.75 0 0 1 13.5 0v2.055c1.115.083 1.84.293 2.371.824C22 11.757 22 13.172 22 16s0 4.243-.879 5.121C20.243 22 18.828 22 16 22H8c-2.828 0-4.243 0-5.121-.879C2 20.243 2 18.828 2 16s0-4.243.879-5.121c.53-.531 1.256-.741 2.371-.824M6.75 8a5.25 5.25 0 0 1 10.5 0v2.004Q16.676 9.999 16 10H8q-.677-.001-1.25.004z"
-                clipRule="evenodd"
+                d="M7.99998 5.33333V7.99999M7.99998 10.6667H8.00665M1.33331 5.68182V10.3182C1.33331 10.4812 1.33331 10.5628 1.35173 10.6395C1.36806 10.7075 1.395 10.7725 1.43155 10.8322C1.47278 10.8995 1.53043 10.9571 1.64573 11.0724L4.92756 14.3542C5.04286 14.4695 5.10051 14.5272 5.16779 14.5684C5.22744 14.605 5.29247 14.6319 5.36049 14.6482C5.43722 14.6667 5.51875 14.6667 5.68181 14.6667H10.3182C10.4812 14.6667 10.5627 14.6667 10.6395 14.6482C10.7075 14.6319 10.7725 14.605 10.8322 14.5684C10.8994 14.5272 10.9571 14.4695 11.0724 14.3542L14.3542 11.0724C14.4695 10.9571 14.5272 10.8995 14.5684 10.8322C14.605 10.7725 14.6319 10.7075 14.6482 10.6395C14.6666 10.5628 14.6666 10.4812 14.6666 10.3182V5.68182C14.6666 5.51876 14.6666 5.43723 14.6482 5.36051C14.6319 5.29248 14.605 5.22745 14.5684 5.1678C14.5272 5.10053 14.4695 5.04288 14.3542 4.92758L11.0724 1.64575C10.9571 1.53045 10.8994 1.4728 10.8322 1.43157C10.7725 1.39502 10.7075 1.36808 10.6395 1.35175C10.5627 1.33333 10.4812 1.33333 10.3182 1.33333H5.68181C5.51875 1.33333 5.43722 1.33333 5.36049 1.35175C5.29247 1.36808 5.22744 1.39502 5.16779 1.43157C5.10051 1.4728 5.04286 1.53045 4.92756 1.64575L1.64573 4.92758C1.53043 5.04288 1.47278 5.10053 1.43155 5.1678C1.395 5.22745 1.36806 5.29248 1.35173 5.36051C1.33331 5.43723 1.33331 5.51876 1.33331 5.68182Z"
+                stroke={props.color}
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
             />
+        </svg>
+    )
+}
+
+function InfoBadge(props: { label: string; color?: string }): React.ReactElement {
+    const color = props.color ?? "#4da3ff"
+    return (
+        <span
+            style={{
+                display: "inline-flex",
+                alignItems: "center",
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.5px",
+                color,
+                backgroundColor: `${color}18`,
+                borderRadius: 4,
+                padding: "1px 6px",
+                flexShrink: 0,
+            }}
+        >
+            {props.label}
+        </span>
+    )
+}
+
+function GoToIcon(): React.ReactElement {
+    return (
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0, opacity: 0.5 }}>
+            <g opacity="0.5">
+                <path d="M5.25 10.5L8.75 7L5.25 3.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </g>
         </svg>
     )
 }
@@ -180,6 +241,45 @@ function RecheckButton(props: { onClick: () => void; disabled: boolean }): React
     )
 }
 
+
+type NodeDisplayType = "text" | "horizontal-stack" | "vertical-stack" | "frame" | "grid"
+
+function NodeTypeIcon(props: { type: NodeDisplayType; color: string }): React.ReactElement {
+    const c = props.color
+    if (props.type === "horizontal-stack") {
+        return (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+                <path d="M12 10C11.9997 11.1044 11.1044 12 10 12H2C0.895588 12 0.000253234 11.1044 0 10V6.5918H12V10ZM10 0C11.1046 0 12 0.895431 12 2V5.38184H0V2C5.83562e-07 0.895431 0.895431 0 2 0H10Z" fill={c} />
+            </svg>
+        )
+    }
+    if (props.type === "vertical-stack") {
+        return (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+                <path d="M10 0C11.1044 0.000253677 12 0.895587 12 2L12 10C12 11.1044 11.1044 11.9997 10 12H6.5918L6.5918 0H10ZM0 2C0 0.895431 0.895431 0 2 0L5.38184 0L5.38184 12L2 12C0.895431 12 0 11.1046 0 10L0 2Z" fill={c} />
+            </svg>
+        )
+    }
+    if (props.type === "text") {
+        return (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+                <path fillRule="evenodd" clipRule="evenodd" d="M10.9995 0.298828C11.2757 0.298828 11.5005 0.522686 11.5005 0.798828V2.13867C11.5003 2.41465 11.2755 2.63867 10.9995 2.63867H7.00928V11.2012C7.00928 11.4773 6.78542 11.7012 6.50928 11.7012H5.4917C5.21556 11.7012 4.9917 11.4773 4.9917 11.2012V2.63867H1.00049C0.724464 2.63867 0.499703 2.41465 0.499512 2.13867V0.798828C0.499512 0.522686 0.724346 0.298828 1.00049 0.298828H10.9995Z" fill={c} />
+            </svg>
+        )
+    }
+    if (props.type === "grid") {
+        return (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+                <path d="M5.49414 12H2C0.895431 12 6.00011e-08 11.1046 0 10V6.48145H5.49414V12ZM12 10C12 11.1046 11.1046 12 10 12H6.50684V6.47656H12V10ZM5.50781 5.51855H0.0136719V2C0.0137044 0.895506 0.909188 7.72064e-05 2.01367 0H5.50781V5.51855ZM10 0C11.1045 0 12 0.895458 12 2V5.51855H6.50684V0H10Z" fill={c} />
+            </svg>
+        )
+    }
+    return (
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flexShrink: 0 }}>
+            <path d="M9 0C10.6569 0 12 1.34315 12 3V9C12 10.6569 10.6569 12 9 12H3C1.34315 12 0 10.6569 0 9V3C0 1.34315 1.34315 0 3 0H9Z" fill={c} />
+        </svg>
+    )
+}
 
 function getDetailGuidance(check: CheckResult): { whatItMeans: string; nextStep: string } {
     const guidanceById: Record<string, { whatItMeans: string; nextStep: string }> = {
@@ -344,23 +444,60 @@ function ScoreRing(props: { theme: ThemeMode }): React.ReactElement {
 
 // --- Stats strip ---
 
-function StatsStrip(props: { report: AuditReport; theme: ThemeMode }): React.ReactElement {
-    const colors = THEME_COLORS[props.theme]
-    const s = THEME_COLORS[props.theme].status
-    const items = [
-        { label: `${props.report.passed} passed`, color: s.pass },
-        { label: `${props.report.warned} warned`, color: s.warning },
-        { label: `${props.report.failed} failed`, color: s.fail },
-    ]
+function StatsStrip(props: { report: AuditReport }): React.ReactElement {
+    type StatItem = { icon: React.ReactElement; label: string; color: string }
+    const stats: StatItem[] = []
+
+    if (props.report.passed > 0) {
+        stats.push({
+            color: "#2fd157",
+            label: `${props.report.passed} Passed`,
+            icon: (
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+                    <circle cx="7" cy="7" r="6.5" stroke="#2fd157" strokeWidth="1.3" />
+                    <path d="M4.5 7L6.2 8.8L9.5 5.5" stroke="#2fd157" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+            ),
+        })
+    }
+    if (props.report.warned > 0) {
+        stats.push({
+            color: "#fdba13",
+            label: `${props.report.warned} Warned`,
+            icon: (
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+                    <path d="M7 1.5L13 12H1L7 1.5Z" stroke="#fdba13" strokeWidth="1.3" strokeLinejoin="round" />
+                    <path d="M7 6V8.5" stroke="#fdba13" strokeWidth="1.3" strokeLinecap="round" />
+                    <circle cx="7" cy="10.5" r="0.6" fill="#fdba13" />
+                </svg>
+            ),
+        })
+    }
+    if (props.report.failed > 0) {
+        stats.push({
+            color: "#ff1a00",
+            label: `${props.report.failed} Failed`,
+            icon: (
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+                    <circle cx="7" cy="7" r="6.5" stroke="#ff1a00" strokeWidth="1.3" />
+                    <path d="M4.5 4.5L9.5 9.5M9.5 4.5L4.5 9.5" stroke="#ff1a00" strokeWidth="1.3" strokeLinecap="round" />
+                </svg>
+            ),
+        })
+    }
+
     return (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 2 }}>
-            {items.map((item, i) => (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: 14 }}>
+            {stats.map((stat, i) => (
                 <React.Fragment key={i}>
-                    <span style={{ fontSize: 11, color: item.color, fontWeight: 500 }}>
-                        {item.label}
-                    </span>
-                    {i < items.length - 1 && (
-                        <span style={{ fontSize: 11, color: colors.text.quaternary }}>·</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        {stat.icon}
+                        <span style={{ fontSize: 12, fontWeight: 500, color: stat.color, lineHeight: 1, whiteSpace: "nowrap" }}>
+                            {stat.label}
+                        </span>
+                    </div>
+                    {i < stats.length - 1 && (
+                        <div style={{ width: 1, height: "100%", backgroundColor: "rgba(255,255,255,0.15)", flexShrink: 0 }} />
                     )}
                 </React.Fragment>
             ))}
@@ -380,6 +517,7 @@ const CheckRow = memo(function CheckRow(props: {
     const statusColor = getStatusColor(status, props.theme)
     const isSkip = status === "skip"
     const isPass = status === "pass"
+    const isInfoOnly = props.check.id === "google-pagespeed"
     const isClickable = props.onClick !== null
 
     return (
@@ -400,7 +538,7 @@ const CheckRow = memo(function CheckRow(props: {
             }}
         >
             <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
-                <StatusIcon status={status} theme={props.theme} />
+                {isInfoOnly ? <InfoIcon color="#4da3ff" /> : <StatusIcon status={status} theme={props.theme} />}
                 <span
                     style={{
                         fontSize: 12,
@@ -414,26 +552,37 @@ const CheckRow = memo(function CheckRow(props: {
                     {props.check.label}
                 </span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-                <span
-                    style={{
-                        fontSize: 9,
-                        fontWeight: 700,
-                        letterSpacing: "0.5px",
-                        color: isPass || isSkip ? colors.text.quaternary : statusColor,
-                        backgroundColor: isPass || isSkip ? "transparent" : `${statusColor}18`,
-                        borderRadius: 4,
-                        padding: isPass || isSkip ? "0" : "2px 6px",
-                    }}
-                >
-                    {status === "pass" ? "PASS" : status === "warning" ? "WARN" : status === "fail" ? "FAIL" : "SKIP"}
-                </span>
-                {isClickable && (
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, opacity: 0.4 }}>
-                        <path d="M3.5 2L6.5 5L3.5 8" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                )}
-            </div>
+            {isInfoOnly ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                    <InfoBadge label="INFO" color="#4da3ff" />
+                    {isClickable && (
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, opacity: 0.4 }}>
+                            <path d="M3.5 2L6.5 5L3.5 8" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    )}
+                </div>
+            ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                    <span
+                        style={{
+                            fontSize: 9,
+                            fontWeight: 700,
+                            letterSpacing: "0.5px",
+                            color: isPass || isSkip ? colors.text.quaternary : statusColor,
+                            backgroundColor: isPass || isSkip ? "transparent" : `${statusColor}18`,
+                            borderRadius: 4,
+                            padding: isPass || isSkip ? "0" : "2px 6px",
+                        }}
+                    >
+                        {status === "pass" ? "PASS" : status === "warning" ? "WARN" : status === "fail" ? "FAIL" : "SKIP"}
+                    </span>
+                    {isClickable && (
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0, opacity: 0.4 }}>
+                            <path d="M3.5 2L6.5 5L3.5 8" stroke={colors.text.secondary} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    )}
+                </div>
+            )}
         </div>
     )
 })
@@ -449,10 +598,11 @@ const SectionCard = memo(function SectionCard(props: {
 }): React.ReactElement {
     const colors = THEME_COLORS[props.theme]
     const s = THEME_COLORS[props.theme].status
+    const countableChecks = props.category.checks.filter((c) => c.id !== "google-pagespeed")
 
-    const passCount = props.category.checks.filter((c) => c.status === "pass").length
-    const warnCount = props.category.checks.filter((c) => c.status === "warning").length
-    const failCount = props.category.checks.filter((c) => c.status === "fail").length
+    const passCount = countableChecks.filter((c) => c.status === "pass").length
+    const warnCount = countableChecks.filter((c) => c.status === "warning").length
+    const failCount = countableChecks.filter((c) => c.status === "fail").length
 
     return (
         <div style={{ marginBottom: 6 }}>
@@ -507,6 +657,39 @@ const SectionCard = memo(function SectionCard(props: {
                     ))}
                 </div>
             )}
+        </div>
+    )
+})
+
+const GetSelectionHeader = memo(function GetSelectionHeader(props: {
+    theme: ThemeMode
+    onClick: () => void
+}): React.ReactElement {
+    const colors = THEME_COLORS[props.theme]
+
+    return (
+        <div style={{ marginBottom: 6 }}>
+            <div
+                onClick={props.onClick}
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    backgroundColor: colors.card.bg,
+                    border: `1px solid ${colors.card.border}`,
+                    cursor: "pointer",
+                    userSelect: "none",
+                }}
+            >
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <ChevronIcon open={false} color={colors.text.quaternary} />
+                    <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase", color: colors.text.secondary }}>
+                        Get selection
+                    </span>
+                </div>
+            </div>
         </div>
     )
 })
@@ -656,7 +839,7 @@ function PageSpeedDetailView(props: {
     isRechecking: boolean
 }): React.ReactElement {
     const colors = THEME_COLORS[props.theme]
-    const statusColor = getStatusColor(props.check.status, props.theme)
+    const statusColor = props.check.id === "google-pagespeed" ? "#4da3ff" : getStatusColor(props.check.status, props.theme)
     const [tab, setTab] = useState<"desktop" | "mobile">("desktop")
     const data = props.check.pageSpeedData as PageSpeedData | undefined
 
@@ -719,14 +902,17 @@ function PageSpeedDetailView(props: {
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, width: "100%" }}>
-                <StatusIcon status={props.check.status} theme={props.theme} />
+                {props.check.id === "google-pagespeed" ? <InfoIcon color={statusColor} /> : <StatusIcon status={props.check.status} theme={props.theme} />}
                 <span style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary, flex: 1, minWidth: 0 }}>
                     {props.check.label}
                 </span>
-                <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.fail, backgroundColor: `${colors.status.fail}18`, borderRadius: 4, padding: "1px 5px" }}>0</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.pass, backgroundColor: `${colors.status.pass}18`, borderRadius: 4, padding: "1px 5px" }}>0</span>
-                </div>
+                {props.check.id === "google-pagespeed" && <InfoBadge label="INFO" color="#4da3ff" />}
+                {props.check.id !== "google-pagespeed" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.fail, backgroundColor: `${colors.status.fail}18`, borderRadius: 4, padding: "1px 5px" }}>0</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: colors.status.pass, backgroundColor: `${colors.status.pass}18`, borderRadius: 4, padding: "1px 5px" }}>0</span>
+                    </div>
+                )}
             </div>
 
         
@@ -778,9 +964,9 @@ function PageSpeedDetailView(props: {
                     <div
                         style={{
                             fontSize: 12,
-                            color: colors.text.secondary,
-                            backgroundColor: `${statusColor}0C`,
-                            border: `1px solid ${statusColor}22`,
+                            color: props.check.id === "google-pagespeed" ? "#8cc5ff" : colors.text.secondary,
+                            backgroundColor: props.check.id === "google-pagespeed" ? "rgba(77,163,255,0.10)" : `${statusColor}0C`,
+                            border: `1px solid ${props.check.id === "google-pagespeed" ? "rgba(77,163,255,0.22)" : `${statusColor}22`}`,
                             borderRadius: 7,
                             padding: "10px 12px",
                             lineHeight: 1.45,
@@ -866,8 +1052,14 @@ function DetailView(props: {
     const [cmsCollectionOpenByName, setCmsCollectionOpenByName] = useState<Map<string, boolean>>(new Map())
     const [itemGroupByNodeId, setItemGroupByNodeId] = useState<Map<string, "component" | "frame">>(new Map())
     const [itemLockByNodeId, setItemLockByNodeId] = useState<Map<string, boolean>>(new Map())
+    const [nodeTypeByNodeId, setNodeTypeByNodeId] = useState<Map<string, NodeDisplayType>>(new Map())
+    const [itemLabelByNodeId, setItemLabelByNodeId] = useState<Map<string, string>>(new Map())
     const [groupingReady, setGroupingReady] = useState(false)
     const isCmsPagesCheck = props.check.id === "duplicate-cms-content" || props.check.id === "empty-cms-fields"
+    const useLegacyItemLabel = props.check.id === "alt-text"
+        || props.check.id === "duplicate-cms-content"
+        || props.check.id === "empty-cms-fields"
+        || props.check.id === "google-pagespeed"
 
     const getCompactItemLabel = useCallback((item: CheckItem): string => {
         // Keep full text for checks where the value details are useful.
@@ -889,6 +1081,11 @@ function DetailView(props: {
         const compact = raw.slice(0, cutIndex).trim()
         return compact.length > 0 ? compact : raw
     }, [props.check.id])
+
+    const getItemDisplayLabel = useCallback((item: CheckItem): string => {
+        if (item.nodeId === null || useLegacyItemLabel) return item.label
+        return itemLabelByNodeId.get(item.nodeId) ?? getCompactItemLabel(item)
+    }, [getCompactItemLabel, itemLabelByNodeId, useLegacyItemLabel])
 
     useEffect(() => {
         let cancelled = false
@@ -918,11 +1115,14 @@ function DetailView(props: {
             if (nodeIds.length === 0) {
                 setItemGroupByNodeId(new Map())
                 setItemLockByNodeId(new Map())
+                setNodeTypeByNodeId(new Map())
+                setItemLabelByNodeId(new Map())
                 setGroupingReady(true)
                 return
             }
 
             try {
+                const framerAny = framer as unknown as { getNode?: (id: string) => Promise<unknown> }
                 const [frameNodes, textNodes, svgNodes, componentDefs, componentInstances] = await Promise.all([
                     framer.getNodesWithType("FrameNode").catch(() => []),
                     framer.getNodesWithType("TextNode").catch(() => []),
@@ -979,6 +1179,7 @@ function DetailView(props: {
 
                 const next = new Map<string, "component" | "frame">()
                 const nextLocks = new Map<string, boolean>()
+                const nextLabels = new Map<string, string>()
 
                 const computeEffectiveLock = (nodeId: string): boolean | undefined => {
                     let currentId: string | undefined = nodeId
@@ -1001,21 +1202,61 @@ function DetailView(props: {
                     return isNodeLockedExtensive(selfNode)
                 }
 
+                const textNodeIdSet = new Set(textNodes.map((n) => n.id))
+                const nextTypes = new Map<string, NodeDisplayType>()
+
+                const resolveDisplayLabel = async (nodeId: string, node: Record<string, unknown> | undefined): Promise<string> => {
+                    const source = node ?? (typeof framerAny.getNode === "function" ? await framerAny.getNode(nodeId).catch(() => null) as Record<string, unknown> | null : null)
+                    if (!source) return nodeId
+
+                    if (typeof source.getText === "function") {
+                        const text = await (source.getText as () => Promise<string>)().catch(() => "")
+                        if (text.trim().length > 0) return text.trim()
+                    }
+
+                    const name = typeof source.name === "string" ? source.name.trim() : ""
+                    return name.length > 0 ? name : nodeId
+                }
+
                 for (const nodeId of nodeIds) {
                     next.set(nodeId, classifyNodeId(nodeId))
                     const lockState = computeEffectiveLock(nodeId)
                     if (lockState !== undefined) nextLocks.set(nodeId, lockState)
+
+                    const rawNode = nodeById.get(nodeId) as unknown as Record<string, unknown> | undefined
+                    if (textNodeIdSet.has(nodeId)) {
+                        nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
+                        nextTypes.set(nodeId, "text")
+                    } else if (rawNode) {
+                        nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, rawNode))
+                        const layout = rawNode.layout
+                        if (layout === "stack") {
+                            const direction = rawNode.stackDirection
+                            nextTypes.set(nodeId, direction === "horizontal" ? "horizontal-stack" : "vertical-stack")
+                        } else if (layout === "grid") {
+                            nextTypes.set(nodeId, "grid")
+                        } else {
+                            nextTypes.set(nodeId, "frame")
+                        }
+                    } else {
+                        nextLabels.set(nodeId, await resolveDisplayLabel(nodeId, undefined))
+                        nextTypes.set(nodeId, "frame")
+                    }
                 }
 
                 if (!cancelled) {
                     setItemGroupByNodeId(next)
                     setItemLockByNodeId(nextLocks)
+                    setNodeTypeByNodeId(nextTypes)
+                    setItemLabelByNodeId(nextLabels)
                     setGroupingReady(true)
                 }
             } catch {
                 if (!cancelled) {
                     setItemGroupByNodeId(new Map())
                     setItemLockByNodeId(new Map())
+                    setNodeTypeByNodeId(new Map())
+                    setItemLabelByNodeId(new Map())
                     setGroupingReady(true)
                 }
             }
@@ -1541,6 +1782,10 @@ function DetailView(props: {
                     )
                 }
 
+                const nodeType = item.nodeId !== null ? nodeTypeByNodeId.get(item.nodeId) : undefined
+                const itemGroup = getItemGroup(item)
+                const iconColor = nodeType === "text" ? "rgba(255,255,255,0.6)" : itemGroup === "component" ? "#9A66FF" : "#0099FF"
+
                 return (
                     <div
                         key={i}
@@ -1551,73 +1796,58 @@ function DetailView(props: {
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "space-between",
-                            gap: 6,
-                            padding: "7px 10px",
-                            borderRadius: 7,
+                            gap: 10,
+                            padding: "10px 12px",
+                            borderRadius: 8,
                             backgroundColor: colors.card.bg,
-                            border: `1px solid ${statusColor}28`,
-                            borderLeft: `3px solid ${statusColor}`,
+                            border: `1px solid ${colors.card.border}`,
                             cursor: item.nodeId !== null ? "pointer" : "default",
                         }}
                         onClick={item.nodeId !== null ? () => { void handleGoTo(item.nodeId as string) } : undefined}
                     >
-                        <span
-                            style={{
-                                fontSize: 12,
-                                fontWeight: 500,
-                                color: colors.text.primary,
-                                flex: 1,
-                                minWidth: 0,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                            }}
-                        >
-                            {getCompactItemLabel(item)}
-                        </span>
-                        {item.badge && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                            {nodeType !== undefined && (
+                                <NodeTypeIcon type={nodeType} color={iconColor} />
+                            )}
                             <span
                                 style={{
-                                    fontSize: 10,
-                                    fontWeight: 700,
-                                    color: colors.text.secondary,
-                                    backgroundColor: `${colors.text.secondary}14`,
-                                    borderRadius: 4,
-                                    padding: "1px 5px",
-                                    flexShrink: 0,
-                                    maxWidth: 120,
+                                    fontSize: 12,
+                                    fontWeight: 500,
+                                    color: colors.text.primary,
+                                    flex: 1,
+                                    minWidth: 0,
                                     overflow: "hidden",
                                     textOverflow: "ellipsis",
                                     whiteSpace: "nowrap",
                                 }}
+                                title={item.label}
                             >
-                                {item.badge}
+                                {getItemDisplayLabel(item)}
                             </span>
-                        )}
-                        {item.pageLabel && (getItemGroup(item) === "frame" || props.check.id === "breakpoint-widths" || isCmsPagesCheck) && (
-                            <span
-                                style={{
-                                    fontSize: 10,
-                                    fontWeight: 700,
-                                    color: colors.badge.text,
-                                    backgroundColor: colors.badge.bg,
-                                    borderRadius: 4,
-                                    padding: "1px 5px",
-                                    flexShrink: 0,
-                                    maxWidth: 120,
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                }}
-                            >
-                                {item.pageLabel}
-                            </span>
-                        )}
-                        {item.nodeId !== null && (
-                            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ flexShrink: 0, opacity: 0.55 }}>
-                                <path d="M2.5 6.5H10.5M7.5 3.5L10.5 6.5L7.5 9.5" stroke={statusColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                        )}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}>
+                            {(item.pageLabel ?? item.badge) && (
+                                <span
+                                    style={{
+                                        fontSize: 10,
+                                        fontWeight: 600,
+                                        lineHeight: 1.1,
+                                        color: item.pageLabel ? "#c8c8c8" : colors.text.secondary,
+                                        backgroundColor: item.pageLabel ? "#484848" : `${colors.text.secondary}14`,
+                                        borderRadius: 3,
+                                        padding: item.pageLabel ? "3px 5px" : "1px 5px",
+                                        flexShrink: 0,
+                                        maxWidth: 120,
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                    }}
+                                >
+                                    {item.pageLabel ?? item.badge}
+                                </span>
+                            )}
+                            {item.nodeId !== null && <GoToIcon />}
+                        </div>
                         {hoveredIndex === i && renderDismissButton(
                             () => props.onDismiss(i),
                             "Dismiss",
@@ -1687,6 +1917,8 @@ function DetailView(props: {
     const frameLockedEntries = frameEntries.filter((e) => getItemLock(e.item) === true)
     const frameUnlockedEntries = frameEntries.filter((e) => getItemLock(e.item) === false)
     const frameOtherEntries = frameEntries.filter((e) => getItemLock(e.item) === undefined)
+    const allDismissed = props.check.items.length > 0 && props.dismissedIndices.size >= props.check.items.length
+    const isResolved = props.check.status === "pass" || allDismissed
 
     return (
         <div style={{ display: "flex", flexDirection: "column", width: "100%", alignItems: "flex-start" }}>
@@ -1721,7 +1953,7 @@ function DetailView(props: {
 
             {/* Check label + status */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, width: "100%" }}>
-                <StatusIcon status={props.check.status} theme={props.theme} />
+                {(props.check.status === "warning" && isResolved) ? <ResolvedWarnIcon /> : <StatusIcon status={props.check.status} theme={props.theme} />}
                 <span style={{ fontSize: 14, fontWeight: 600, color: colors.text.primary, flex: 1, minWidth: 0 }}>
                     {props.check.label}
                 </span>
@@ -1735,31 +1967,41 @@ function DetailView(props: {
                 </div>
             </div>
 
-            {/* Detail text */}
-            {props.check.detail && (() => {
+            {/* Help Notes */}
+            {(() => {
+                return (isResolved ? (
+                <div style={{ borderRadius: 8, backgroundColor: "#142212", padding: 13, display: "flex", flexDirection: "column", gap: 10, marginBottom: 12, width: "100%", boxSizing: "border-box" }}>
+                    <div style={{ display: "flex", alignItems: "center", width: "100%" }}>
+                        <div style={{ position: "relative", height: 14, width: "100%" }}>
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ position: "absolute", left: 0, top: 0 }}>
+                                <path d="M8.16671 6.41666H4.66671M5.83337 8.74999H4.66671M9.33338 4.08332H4.66671M11.6667 5.83332V3.96666C11.6667 2.98656 11.6667 2.49652 11.476 2.12217C11.3082 1.79289 11.0405 1.52517 10.7112 1.3574C10.3368 1.16666 9.8468 1.16666 8.86671 1.16666H5.13337C4.15328 1.16666 3.66324 1.16666 3.28889 1.3574C2.95961 1.52517 2.69189 1.79289 2.52411 2.12217C2.33337 2.49652 2.33337 2.98656 2.33337 3.96666V10.0333C2.33337 11.0134 2.33337 11.5035 2.52411 11.8778C2.69189 12.2071 2.95961 12.4748 3.28889 12.6426C3.66324 12.8333 4.15328 12.8333 5.13337 12.8333H7.29171M10.5 12.25C10.5 12.25 12.25 11.4159 12.25 10.1647V8.70501L10.9739 8.24903C10.6673 8.1392 10.332 8.1392 10.0254 8.24903L8.75004 8.70501V10.1647C8.75004 11.4159 10.5 12.25 10.5 12.25Z" stroke="#8ED483" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                            <span style={{ position: "absolute", left: 24, top: 0, fontSize: 12, fontWeight: 500, color: "#8ED483", lineHeight: 1.2 }}>Help Notes</span>
+                        </div>
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 400, color: "#66A374", lineHeight: 1.5 }}>You've fully resolved all the issues</span>
+                </div>
+            ) : props.check.detail ? (() => {
                 const guidance = getDetailGuidance(props.check)
                 return (
-                    <div
-                        style={{
-                            fontSize: 12,
-                            color: colors.text.secondary,
-                            backgroundColor: `${statusColor}0C`,
-                            border: `1px solid ${statusColor}22`,
-                            borderRadius: 7,
-                            padding: "8px 10px",
-                            marginBottom: 12,
-                            lineHeight: 1.45,
-                        }}
-                    >
-                        <div>
-                            {props.check.detail}
+                    <div style={{ borderRadius: 8, backgroundColor: "rgba(255, 137, 0, 0.1)", padding: 13, display: "flex", flexDirection: "column", gap: 10, marginBottom: 12, width: "100%", boxSizing: "border-box" }}>
+                        <div style={{ display: "flex", alignItems: "center", width: "100%" }}>
+                            <div style={{ position: "relative", height: 14, width: "100%" }}>
+                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ position: "absolute", left: 0, top: 0 }}>
+                                    <path d="M8.16665 6.41666H4.66665M5.83331 8.74999H4.66665M9.33331 4.08332H4.66665M11.6666 5.83332V3.96666C11.6666 2.98656 11.6666 2.49652 11.4759 2.12217C11.3081 1.79289 11.0404 1.52517 10.7111 1.3574C10.3368 1.16666 9.84674 1.16666 8.86665 1.16666H5.13331C4.15322 1.16666 3.66318 1.16666 3.28883 1.3574C2.95955 1.52517 2.69183 1.79289 2.52405 2.12217C2.33331 2.49652 2.33331 2.98656 2.33331 3.96666V10.0333C2.33331 11.0134 2.33331 11.5035 2.52405 11.8778C2.69183 12.2071 2.95955 12.4748 3.28883 12.6426C3.66318 12.8333 4.15322 12.8333 5.13331 12.8333H7.29165M10.5 12.25C10.5 12.25 12.25 11.4159 12.25 10.1647V8.70501L10.9739 8.24903C10.6673 8.1392 10.332 8.1392 10.0254 8.24903L8.74998 8.70501V10.1647C8.74998 11.4159 10.5 12.25 10.5 12.25Z" stroke="#D4AF83" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                                <span style={{ position: "absolute", left: 24, top: 0, fontSize: 12, fontWeight: 500, color: "#D4AF83", lineHeight: 1.2 }}>Help Notes</span>
+                            </div>
                         </div>
-                        <div style={{ marginTop: 6 }}>
-                            {guidance.nextStep}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            <span style={{ fontSize: 12, fontWeight: 400, color: "#A38766", lineHeight: 1.5 }}>{props.check.detail}</span>
+                            <span style={{ fontSize: 12, fontWeight: 400, color: "#A38766", lineHeight: 1.5 }}>{guidance.nextStep}</span>
                         </div>
                     </div>
                 )
-            })()}
+            })() : null)
+            })()
+            }
 
             {isCmsPagesCheck && props.check.items.length > 0 && shouldRenderGroupedItems && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8, width: "100%" }}>
@@ -1800,7 +2042,7 @@ function DetailView(props: {
                                 style={{ padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                             >
                                 <ChevronIcon open={componentsOpen} color={colors.text.quaternary} />
-                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Components ({componentEntries.length})</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Components</span>
                             </div>
                             {componentsOpen && (
                                 <div style={{ padding: "0 6px 6px 6px", backgroundColor: colors.card.bg, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1811,10 +2053,7 @@ function DetailView(props: {
                                                 style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                                             >
                                                 <ChevronIcon open={componentLockedOpen} color={colors.text.quaternary} />
-                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary, display: "flex", alignItems: "center", gap: 5 }}>
-                                                    <LockIcon color={colors.text.secondary} />
-                                                    Locked ({componentLockedEntries.length})
-                                                </span>
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Locked</span>
                                                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
                                                     {renderDismissControls(componentLockedEntries, "Dismiss locked items")}
                                                 </div>
@@ -1834,7 +2073,7 @@ function DetailView(props: {
                                                 style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                                             >
                                                 <ChevronIcon open={componentUnlockedOpen} color={colors.text.quaternary} />
-                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Unlocked ({componentUnlockedEntries.length})</span>
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Unlocked</span>
                                                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
                                                     {renderDismissControls(componentUnlockedEntries, "Dismiss unlocked items")}
                                                 </div>
@@ -1860,7 +2099,7 @@ function DetailView(props: {
                                 style={{ padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                             >
                                 <ChevronIcon open={framesOpen} color={colors.text.quaternary} />
-                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Frames ({frameEntries.length})</span>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Frames</span>
                             </div>
                             {framesOpen && (
                                 <div style={{ padding: "0 6px 6px 6px", backgroundColor: colors.card.bg, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1871,10 +2110,7 @@ function DetailView(props: {
                                                 style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                                             >
                                                 <ChevronIcon open={frameLockedOpen} color={colors.text.quaternary} />
-                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary, display: "flex", alignItems: "center", gap: 5 }}>
-                                                    <LockIcon color={colors.text.secondary} />
-                                                    Locked ({frameLockedEntries.length})
-                                                </span>
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Locked</span>
                                                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
                                                     {renderDismissControls(frameLockedEntries, "Dismiss locked items")}
                                                 </div>
@@ -1894,7 +2130,7 @@ function DetailView(props: {
                                                 style={{ padding: "7px 9px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, backgroundColor: colors.card.bg }}
                                             >
                                                 <ChevronIcon open={frameUnlockedOpen} color={colors.text.quaternary} />
-                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Unlocked ({frameUnlockedEntries.length})</span>
+                                                <span style={{ fontSize: 12, fontWeight: 600, color: colors.text.secondary }}>Unlocked</span>
                                                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
                                                     {renderDismissControls(frameUnlockedEntries, "Dismiss unlocked items")}
                                                 </div>
@@ -2528,6 +2764,96 @@ export function App(): React.ReactElement {
         setDetailCheck(null)
     }, [])
 
+    const handleGetSelectionDump = useCallback(async () => {
+        type UnknownRecord = Record<string, unknown>
+
+        const safeInvoke = async (obj: UnknownRecord, methodName: string): Promise<unknown> => {
+            const fn = obj[methodName]
+            if (typeof fn !== "function") return null
+            try {
+                return await (fn as () => Promise<unknown>)()
+            } catch {
+                return null
+            }
+        }
+
+        const selection = await framer.getSelection().catch(() => [])
+
+        console.group("[Get selection] Selection dump")
+        console.log("selectedCount", selection.length)
+        console.log("selectionRaw", selection)
+
+        if (selection.length === 0) {
+            console.warn("No node selected.")
+            console.groupEnd()
+            return
+        }
+
+        const framerAny = framer as unknown as { getNode?: (id: string) => Promise<unknown> }
+
+        for (let i = 0; i < selection.length; i += 1) {
+            const node = selection[i] as CanvasNode
+            const rec = node as unknown as UnknownRecord
+
+            const parent = await safeInvoke(rec, "getParent")
+            const children = await safeInvoke(rec, "getChildren")
+            const variables = await safeInvoke(rec, "getVariables")
+            const controls = await safeInvoke(rec, "getControls")
+            const attributes = await safeInvoke(rec, "getAttributes")
+
+            let liveNode: unknown = null
+            if (typeof framerAny.getNode === "function") {
+                liveNode = await framerAny.getNode(node.id).catch(() => null)
+            }
+
+            const snapshot: UnknownRecord = {}
+            const keysToCapture = [
+                "id",
+                "name",
+                "type",
+                "visible",
+                "locked",
+                "isLocked",
+                "position",
+                "width",
+                "height",
+                "top",
+                "right",
+                "bottom",
+                "left",
+                "rotation",
+                "opacity",
+                "blendMode",
+                "backgroundColor",
+                "backgroundImage",
+                "borderRadius",
+                "children",
+                "controls",
+                "typedControls",
+                "componentIdentifier",
+                "link",
+            ]
+
+            for (const key of keysToCapture) {
+                if (key in rec) snapshot[key] = rec[key]
+            }
+
+            console.groupCollapsed(`Node ${i + 1} of ${selection.length} | ${node.id}`)
+            console.log("rawNode", node)
+            console.log("snapshot", snapshot)
+            console.log("allOwnKeys", Object.keys(rec))
+            console.log("parent", parent)
+            console.log("children", children)
+            console.log("variables", variables)
+            console.log("controlsMethodResult", controls)
+            console.log("attributesMethodResult", attributes)
+            console.log("framer.getNode", liveNode)
+            console.groupEnd()
+        }
+
+        console.groupEnd()
+    }, [])
+
     const handleRecheck = useCallback(async () => {
         if (!detailCheck) return
 
@@ -2582,71 +2908,120 @@ export function App(): React.ReactElement {
 
     const colors = THEME_COLORS[theme]
     const effectiveReport = auditReport ? computeEffectiveReport(auditReport, dismissedItems) : null
-    const scoreColor = effectiveReport ? getScoreColor(effectiveReport.score, theme) : colors.text.quaternary
 
     return (
         <main style={{ backgroundColor: colors.bg, color: colors.text.primary, position: "relative" }}>
-            {/* Tab bar — sticky, always on top, content scrolls behind it */}
-            <div style={{ borderBottom: `1px solid ${colors.divider}`, display: "flex", margin: "0 -15px",
-                position: "sticky", top: 0, zIndex: 10, backgroundColor: colors.bg }}>
-                <button onClick={() => setActiveTab("results")}
-                    style={{ flex: 1, background: "none", border: "none", borderRadius: 0,
-                        borderBottom: activeTab === "results" ? "2px solid #008CFF" : "2px solid transparent",
-                        color: activeTab === "results" ? colors.text.primary : colors.text.secondary,
-                        fontWeight: activeTab === "results" ? 700 : 400,
-                        fontSize: 13, padding: "10px 0", cursor: "pointer", marginBottom: -1 }}>
-                    Results 
-                </button>
-                <button onClick={() => setActiveTab("padding")}
-                    style={{ flex: 1, background: "none", border: "none", borderRadius: 0,
-                        borderBottom: activeTab === "padding" ? "2px solid #008CFF" : "2px solid transparent",
-                        color: activeTab === "padding" ? colors.text.primary : colors.text.secondary,
-                        fontWeight: activeTab === "padding" ? 700 : 400,
-                        fontSize: 13, padding: "10px 0", cursor: "pointer", marginBottom: -1 }}>
-                    Padding & Gap
-                </button>
+            {/* Tab bar */}
+            <div style={{ padding: "8px 0 0", flexShrink: 0 }}>
+                <div style={{ display: "flex", backgroundColor: "#2a2a2a", borderRadius: 9, padding: 3, gap: 2 }}>
+                    <button
+                        className="tab-switch-button"
+                        onClick={() => setActiveTab("results")}
+                        style={{
+                            flex: 1,
+                            background: activeTab === "results" ? "#404040" : "none",
+                            border: "none",
+                            borderRadius: 7,
+                            boxShadow: activeTab === "results" ? "none" : "0px 2px 8px rgba(0, 0, 0, 0.15)",
+                            color: activeTab === "results" ? "#f6f6f6" : "rgba(255, 255, 255, 0.5)",
+                            fontWeight: 600,
+                            fontSize: 12,
+                            padding: "6.5px 0",
+                            cursor: "pointer",
+                        }}
+                    >
+                        Audit Results
+                    </button>
+                    <button
+                        className="tab-switch-button"
+                        onClick={() => setActiveTab("padding")}
+                        style={{
+                            flex: 1,
+                            background: activeTab === "padding" ? "#404040" : "none",
+                            border: "none",
+                            borderRadius: 7,
+                            boxShadow: activeTab === "padding" ? "none" : "0px 2px 8px rgba(0, 0, 0, 0.15)",
+                            color: activeTab === "padding" ? "#f6f6f6" : "rgba(255, 255, 255, 0.5)",
+                            fontWeight: 600,
+                            fontSize: 12,
+                            padding: "6.5px 0",
+                            cursor: "pointer",
+                        }}
+                    >
+                        Spacing Check
+                    </button>
+                </div>
             </div>
 
             {/* Results tab — always mounted, hidden when inactive so state is preserved */}
-            <div style={{ display: activeTab === "results" ? "flex" : "none", flexDirection: "column", flex: 1 }}>
-                        {/* Score area — pinned, never scrolls */}
-                        <div style={{ padding: "14px 0 10px", marginBottom: 12, flexShrink: 0 }}>
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 7 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                                    <span style={{ fontSize: 22, fontWeight: 700, color: scoreColor, letterSpacing: "-0.5px", lineHeight: 1 }}>
-                                        {effectiveReport ? `${effectiveReport.score}%` : "—"}
-                                    </span>
-                                    {effectiveReport && (
-                                        <span style={{ fontSize: 12, fontWeight: 500, color: scoreColor, opacity: 0.75, alignSelf: "flex-end", paddingBottom: 1 }}>
-                                            {effectiveReport.scoreLabel}
-                                        </span>
+            <div style={{ display: activeTab === "results" ? "flex" : "none", flexDirection: "column", flex: 1, paddingTop: 12 }}>
+                        {/* Score area */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingBottom: 4, flexShrink: 0 }}>
+                            {/* Score number + delta */}
+                            <div style={{ display: "flex", flexDirection: "column" }}>
+                                <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", whiteSpace: "nowrap" }}>
+                                    {/* Score number */}
+                                    {(() => {
+                                        const displayScore = effectiveReport ? effectiveReport.score : isRunning ? scanProgress : null
+                                        const pc = isRunning
+                                            ? { main: "#008CFF", half: "rgba(0,140,255,0.5)", low: "rgba(0,140,255,0.15)" }
+                                            : effectiveReport ? getProgressColors(effectiveReport.score) : null
+                                        return (
+                                            <div style={{ display: "flex", alignItems: "flex-end", gap: 4 }}>
+                                                <span style={{ fontSize: 25, fontWeight: 600, color: pc?.main ?? "rgba(255,255,255,0.25)", lineHeight: 1 }}>
+                                                    {displayScore ?? "—"}
+                                                </span>
+                                                {displayScore !== null && (
+                                                    <span style={{ fontSize: 16, fontWeight: 500, color: pc?.half ?? "rgba(255,255,255,0.15)", lineHeight: "1.13" }}>
+                                                        %
+                                                    </span>
+                                                )}
+                                            </div>
+                                        )
+                                    })()}
+                                    {/* Delta vs audit baseline */}
+                                    {effectiveReport && auditReport && effectiveReport.score > auditReport.score && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "1px 0" }}>
+                                            <span style={{ fontSize: 12, fontWeight: 500, color: "#2fd157", lineHeight: 1 }}>
+                                                +{effectiveReport.score - auditReport.score}%
+                                            </span>
+                                            <span style={{ fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", lineHeight: 1 }}>
+                                                vs {auditReport.score}%
+                                            </span>
+                                        </div>
                                     )}
                                 </div>
                             </div>
-                            {effectiveReport && <StatsStrip report={effectiveReport} theme={theme} />}
+                            {/* Progress bar */}
+                            {(isRunning || effectiveReport) && (() => {
+                                const pc = isRunning
+                                    ? { main: "#008CFF", half: "rgba(0,140,255,0.5)", low: "rgba(0,140,255,0.15)" }
+                                    : getProgressColors(effectiveReport!.score)
+                                return (
+                                    <div style={{ height: 6, borderRadius: 4, backgroundColor: pc.low, overflow: "hidden" }}>
+                                        <div
+                                            key={scoreVersion}
+                                            style={{
+                                                height: "100%",
+                                                width: `${isRunning ? scanProgress : (effectiveReport?.score ?? 0)}%`,
+                                                backgroundColor: pc.main,
+                                                borderRadius: "0 99px 99px 0",
+                                                transition: "width 0.4s ease",
+                                                minHeight: 1,
+                                                minWidth: 1,
+                                            }}
+                                        />
+                                    </div>
+                                )
+                            })()}
+                            {/* Stats strip */}
+                            {effectiveReport && <StatsStrip report={effectiveReport} />}
                             {!effectiveReport && !isRunning && (
-                                <span style={{ fontSize: 11, color: colors.text.quaternary }}>Not scanned yet</span>
-                            )}
-                            {isRunning && (
-                                <span style={{ fontSize: 11, color: colors.text.quaternary }}>Scanning… {scanProgress}%</span>
-                            )}
-                            {(isRunning || effectiveReport) && (
-                                <div style={{ height: 2, borderRadius: 1, backgroundColor: colors.divider, overflow: "hidden", marginTop: 4 }}>
-                                    <div
-                                        key={scoreVersion}
-                                        style={{
-                                            height: "100%",
-                                            width: `${isRunning ? scanProgress : (effectiveReport?.score ?? 0)}%`,
-                                            backgroundColor: isRunning ? "#008CFF" : scoreColor,
-                                            borderRadius: 1,
-                                            transition: "width 0.3s ease",
-                                        }}
-                                    />
-                                </div>
+                                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.25)" }}>Not scanned yet</span>
                             )}
                         </div>
 
-                    <div className="audit-scroll" style={{ paddingBottom: 60 }}>
+                    <div className="audit-scroll" style={{ paddingBottom: 60, marginTop: 16 }}>
                         {detailCheck && (
                             <DetailView
                                 check={detailCheck}
@@ -2661,6 +3036,10 @@ export function App(): React.ReactElement {
                         )}
                         {!detailCheck && effectiveReport && (
                             <>
+                                <GetSelectionHeader
+                                    theme={theme}
+                                    onClick={() => { void handleGetSelectionDump() }}
+                                />
                                 {effectiveReport.categories.map((category: CheckCategory) => (
                                     <SectionCard
                                         key={category.id}
@@ -2686,7 +3065,7 @@ export function App(): React.ReactElement {
                         )}
                     </div>
 
-                    <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 15px", backgroundColor: colors.bg, borderTop: `1px solid ${colors.divider}`, zIndex: 20 }}>
+                    <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 15px 15px", backgroundColor: colors.bg, borderTop: `1px solid ${colors.divider}`, zIndex: 20 }}>
                         <button onClick={() => { void handleAudit() }} disabled={isRunning}
                             style={{
                                 width: "100%",
