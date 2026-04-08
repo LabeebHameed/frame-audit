@@ -2988,8 +2988,8 @@ export function App(): React.ReactElement {
                                     {/* Delta vs audit baseline */}
                                     {effectiveReport && auditReport && effectiveReport.score === auditReport.score && (
                                         <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "1px 0" }}>
-                                            <span style={{ fontSize: 12, fontWeight: 500, color: "#2fd157", lineHeight: 1 }}>
-                                                Fixed issues
+                                            <span style={{ fontSize: 12, fontWeight: 500, color: "rgba(255,255,255,0.5)", lineHeight: 1 }}>
+                                                Fix issues
                                             </span>
                                         </div>
                                     )}
