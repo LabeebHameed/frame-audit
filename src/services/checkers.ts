@@ -5157,6 +5157,7 @@ function checkNaming(nodes: AllNodes): CheckResult {
     const id = "naming"
     const label = "Naming"
     const DEFAULT_NAMES = new Set(["frame", "stack", "grid", "masonry"])
+    const DEFAULT_NAMES_WITH_NUMBERS = /^(frame|stack|grid|masonry)\s+\d+$/i
 
     const flagged: Array<CheckItem> = []
     for (const frame of nodes.contentFrameNodes) {
@@ -5164,7 +5165,7 @@ function checkNaming(nodes: AllNodes): CheckResult {
         if (nodes.nodesInNonPrimaryVariants.has(frame.id)) continue
         
         const name = (frame.name ?? "").trim()
-        if (name.length > 0 && DEFAULT_NAMES.has(name.toLowerCase())) {
+        if (name.length > 0 && (DEFAULT_NAMES.has(name.toLowerCase()) || DEFAULT_NAMES_WITH_NUMBERS.test(name))) {
             flagged.push(withFramePageLabel(nodes, { label: name, nodeId: frame.id }, frame.id))
         }
     }
